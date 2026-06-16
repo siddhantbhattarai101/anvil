@@ -246,9 +246,10 @@ impl SsrfProbeGenerator {
                 probe_type: SsrfProbeType::ExternalReachability,
                 target: url,
                 description: "Benign external endpoint for reachability testing".to_string(),
+                headers: Vec::new(),
             });
         }
-        
+
         // 2. Internal IP probes
         for url in self.generate_internal_ip_probes() {
             probes.push(SsrfProbe {
@@ -256,19 +257,22 @@ impl SsrfProbeGenerator {
                 probe_type: SsrfProbeType::InternalIp,
                 target: url.clone(),
                 description: format!("Internal IP probe: {}", url),
+                headers: Vec::new(),
             });
         }
-        
-        // 3. Cloud metadata probes
+
+        // 3. Cloud metadata probes (carry provider-required headers)
         for url in self.generate_metadata_probes() {
+            let headers = metadata_headers(&url);
             probes.push(SsrfProbe {
                 payload: url.clone(),
                 probe_type: SsrfProbeType::CloudMetadata,
                 target: url.clone(),
                 description: format!("Cloud metadata endpoint: {}", url),
+                headers,
             });
         }
-        
+
         // 4. Non-HTTP scheme probes
         for url in self.generate_scheme_probes("example.com") {
             probes.push(SsrfProbe {
@@ -276,9 +280,10 @@ impl SsrfProbeGenerator {
                 probe_type: SsrfProbeType::NonHttpScheme,
                 target: url.clone(),
                 description: format!("Non-HTTP scheme probe: {}", url),
+                headers: Vec::new(),
             });
         }
-        
+
         // 5. Bypass technique probes
         for url in self.generate_bypass_probes(original_value) {
             probes.push(SsrfProbe {
@@ -286,6 +291,7 @@ impl SsrfProbeGenerator {
                 probe_type: SsrfProbeType::BypassTechnique,
                 target: url.clone(),
                 description: "URL encoding/bypass technique".to_string(),
+                headers: Vec::new(),
             });
         }
         
@@ -326,15 +332,32 @@ pub enum SsrfProbeType {
 pub struct SsrfProbe {
     /// The payload to inject
     pub payload: String,
-    
+
     /// Type of probe
     pub probe_type: SsrfProbeType,
-    
+
     /// Target being probed
     pub target: String,
-    
+
     /// Human-readable description
     pub description: String,
+
+    /// Headers that must accompany this probe (e.g. `Metadata-Flavor: Google`
+    /// for GCP, `Metadata: true` for Azure — these endpoints reject requests
+    /// without them, so omitting the header silently fails detection).
+    pub headers: Vec<(String, String)>,
+}
+
+/// Required headers for a cloud metadata endpoint, keyed off the URL. GCP and
+/// Azure IMDS reject requests that lack these headers.
+fn metadata_headers(url: &str) -> Vec<(String, String)> {
+    if url.contains("computeMetadata") || url.contains("metadata.google") {
+        vec![("Metadata-Flavor".to_string(), "Google".to_string())]
+    } else if url.contains("/metadata/instance") || url.contains("/metadata/identity") {
+        vec![("Metadata".to_string(), "true".to_string())]
+    } else {
+        Vec::new()
+    }
 }
 
 impl SsrfProbe {
@@ -390,13 +413,15 @@ mod tests {
             probe_type: SsrfProbeType::ExternalReachability,
             target: "test".to_string(),
             description: "test".to_string(),
+            headers: Vec::new(),
         };
-        
+
         let probe2 = SsrfProbe {
             payload: "test".to_string(),
             probe_type: SsrfProbeType::CloudMetadata,
             target: "test".to_string(),
             description: "test".to_string(),
+            headers: Vec::new(),
         };
         
         assert!(probe1.priority() < probe2.priority());

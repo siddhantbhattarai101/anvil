@@ -220,7 +220,12 @@ impl SsrfDetector {
 
         // Measure timing
         let start = Instant::now();
-        let request = HttpRequest::new(Method::GET, test_url.clone());
+        let mut request = HttpRequest::new(Method::GET, test_url.clone());
+        // Attach any provider-required headers (GCP Metadata-Flavor, Azure
+        // Metadata: true) — without these the metadata endpoints return 403.
+        for (name, value) in &probe.headers {
+            request.set_header(name, value);
+        }
         let response = match client.execute(request).await {
             Ok(r) => r,
             Err(e) => {
