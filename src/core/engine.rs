@@ -245,6 +245,14 @@ impl Engine {
         }
 
         // -------------------------------------------------
+        // COMMAND INJECTION (CWE-78)
+        // -------------------------------------------------
+        if self.ctx.profile.has(Capability::Cmdi) {
+            tracing::info!("Running OS command injection scan...");
+            self.run_cmdi_scan(&client, &target_url, &sitemap, &mut reporter).await?;
+        }
+
+        // -------------------------------------------------
         // GENERATE REPORT
         // -------------------------------------------------
         tracing::info!("ANVIL scan completed successfully");
@@ -2096,6 +2104,128 @@ impl Engine {
         };
         
         reporter.add(finding);
+    }
+
+    /// Run OS command-injection detection over the testable parameters.
+    async fn run_cmdi_scan(
+        &self,
+        client: &HttpClient,
+        target_url: &Url,
+        sitemap: &Option<SiteMap>,
+        reporter: &mut crate::reporting::reporter::Reporter,
+    ) -> anyhow::Result<()> {
+        // Build (url, param) pairs to test, preserving sibling query params.
+        let mut targets: Vec<(Url, String)> = Vec::new();
+        if let Some(p) = &self.ctx.direct_param {
+            targets.push((target_url.clone(), p.clone()));
+        } else if let Some(sm) = sitemap {
+            for (path, ep) in &sm.endpoints {
+                if ep.parameters.is_empty() {
+                    continue;
+                }
+                let base = match target_url.join(path) {
+                    Ok(u) => u,
+                    Err(_) => continue,
+                };
+                for param in &ep.parameters {
+                    let mut pairs: Vec<(String, String)> = Vec::new();
+                    let mut seen = std::collections::HashSet::new();
+                    for (k, v) in target_url.query_pairs() {
+                        if seen.insert(k.to_string()) {
+                            pairs.push((k.to_string(), v.to_string()));
+                        }
+                    }
+                    for pp in &ep.parameters {
+                        if seen.insert(pp.clone()) {
+                            pairs.push((pp.clone(), "1".to_string()));
+                        }
+                    }
+                    let mut seeded = base.clone();
+                    {
+                        let mut qp = seeded.query_pairs_mut();
+                        qp.clear();
+                        for (k, v) in &pairs {
+                            qp.append_pair(k, v);
+                        }
+                    }
+                    targets.push((seeded, param.clone()));
+                }
+            }
+        } else {
+            for (k, _) in target_url.query_pairs() {
+                targets.push((target_url.clone(), k.to_string()));
+            }
+        }
+
+        let method = reqwest::Method::from_bytes(self.ctx.http_method.as_bytes())
+            .unwrap_or(reqwest::Method::GET);
+        for (url, param) in &targets {
+            let point = crate::sqli::request::InjectionPoint::from_context(
+                method.clone(),
+                url.clone(),
+                param,
+                self.ctx.post_data.clone(),
+                Vec::new(),
+                Vec::new(),
+            );
+            let request = crate::sqli::request::Request::with_point(client, point);
+            match crate::cmdi::check_cmdi(&request).await {
+                Ok(Some(v)) => {
+                    tracing::warn!(
+                        "[CMDI CONFIRMED] {} param={} via {} (separator {:?})",
+                        url,
+                        param,
+                        v.technique,
+                        v.separator
+                    );
+                    self.add_cmdi_finding(url, param, &v, reporter);
+                }
+                Ok(None) => {}
+                Err(e) => tracing::debug!("cmdi error on '{}': {}", param, e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Add a confirmed command-injection finding.
+    fn add_cmdi_finding(
+        &self,
+        url: &Url,
+        param: &str,
+        v: &crate::cmdi::CmdiVector,
+        reporter: &mut crate::reporting::reporter::Reporter,
+    ) {
+        use crate::reporting::model::{Finding, Severity};
+        reporter.add(Finding {
+            vuln_type: "OS Command Injection".to_string(),
+            technique: format!("Command injection ({})", v.technique),
+            endpoint: url.path().to_string(),
+            parameter: Some(param.to_string()),
+            confidence: 0.95,
+            severity: Severity::Critical,
+            evidence: format!(
+                "Confirmed via {} ({} separator).\nParameter: {}\nPayload: {}",
+                v.technique, v.separator, param, v.payload
+            ),
+            http_method: self.ctx.http_method.clone(),
+            database: None,
+            cwe: "CWE-78".to_string(),
+            cvss_score: Some(9.8),
+            description:
+                "OS command injection: attacker-controlled input is passed to a system shell."
+                    .to_string(),
+            impact: "Arbitrary command execution on the server, leading to full host compromise."
+                .to_string(),
+            remediation:
+                "Avoid invoking the shell with user input; use parameterised APIs (execve-style \
+                 argument arrays), strict allow-lists, and input validation."
+                    .to_string(),
+            references: vec![
+                "https://owasp.org/www-community/attacks/Command_Injection".to_string(),
+                "https://cwe.mitre.org/data/definitions/78.html".to_string(),
+            ],
+            payload_sample: Some(v.payload.clone()),
+        });
     }
 
     /// Run SSRF scan with evidence-driven detection

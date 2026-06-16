@@ -26,6 +26,9 @@ pub enum Capability {
     
     // SSRF scanner
     Ssrf,            // Server-Side Request Forgery
+
+    // Command injection
+    Cmdi,            // OS command injection (CWE-78)
 }
 
 impl Capability {
