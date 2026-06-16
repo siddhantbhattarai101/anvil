@@ -121,6 +121,63 @@ class Handler(BaseHTTPRequestHandler):
         def p(name, default=""):
             return q.get(name, [default])[0]
 
+        # ---------- OWASP-Benchmark-style scale corpus ----------
+        # /bench/{type}/{case} — `case` (in the PATH, so it survives scanning that
+        # rewrites query params) decides whether this case is genuinely vulnerable
+        # (even) or safe-but-look-alike (odd) and which context. The injectable
+        # parameter is `q`. Ground truth is derived from `case` in the generated
+        # manifest, mirroring OWASP Benchmark's 50/50 TP/FP design.
+        def _bench_case(prefix):
+            try:
+                return int(path[len(prefix):])
+            except ValueError:
+                return 0
+
+        if path.startswith("/bench/sqli/"):
+            case = _bench_case("/bench/sqli/")
+            qv = p("q", "1")
+            real = (case % 2 == 0)
+            ctx = case % 3  # 0=numeric, 1=single-quote string, 2=error-returning
+            conn = db()
+            try:
+                if real:
+                    sql = (
+                        f"SELECT name FROM users WHERE name='{qv}'"
+                        if ctx == 1
+                        else f"SELECT name FROM users WHERE id={qv}"
+                    )
+                    rows = conn.execute(sql).fetchall()
+                    return self._send(f"<p>{'Welcome' if rows else 'Not found'}</p>")
+                # safe: parameterized query
+                if ctx == 1:
+                    rows = conn.execute("SELECT name FROM users WHERE name=?", (qv,)).fetchall()
+                else:
+                    rows = conn.execute("SELECT name FROM users WHERE id=?", (qv,)).fetchall()
+                return self._send(f"<p>{'Welcome' if rows else 'Not found'}</p>")
+            except sqlite3.Error:
+                # vulnerable + error context leaks a (MySQL-style) DB error
+                if real:
+                    return self._send(MYSQL_ERR.format(frag=qv[-8:]))
+                return self._send("<p>Not found</p>")
+            finally:
+                conn.close()
+
+        if path.startswith("/bench/xss/"):
+            case = _bench_case("/bench/xss/")
+            qv = p("q", "test")
+            real = (case % 2 == 0)
+            ctx = case % 4  # 0=body, 1=attribute, 2=js-string, 3=comment
+            val = qv if real else html.escape(qv, quote=True)
+            if ctx == 0:
+                body = f"<div>{val}</div>"
+            elif ctx == 1:
+                body = f'<input value="{val}">'
+            elif ctx == 2:
+                body = f'<script>var x="{val}";</script>'
+            else:
+                body = f"<!-- {val} -->"
+            return self._send(f"<html><body>{body}</body></html>")
+
         # ---------------- SQLi ----------------
         if path == "/sqli/error" or (path == "/sqli/post" and post):
             raw = p("id", "1")

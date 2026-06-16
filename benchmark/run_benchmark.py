@@ -137,8 +137,13 @@ def score(rows, tool):
     prec = tp / (tp + fp) if (tp + fp) else 1.0
     rec = tp / (tp + fn) if (tp + fn) else 1.0
     f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+    # OWASP Benchmark metrics: TPR (recall), FPR, and the Benchmark Accuracy
+    # Score (Youden's J = TPR - FPR), the official tool-scoring metric.
+    tpr = rec
+    fpr = fp / (fp + tn) if (fp + tn) else 0.0
+    bas = tpr - fpr
     return dict(tp=tp, fp=fp, fn=fn, tn=tn, precision=prec, recall=rec,
-                f1=f1, total_t=round(total_t, 1), n=n)
+                f1=f1, tpr=tpr, fpr=fpr, bas=bas, total_t=round(total_t, 1), n=n)
 
 
 def main():
@@ -213,14 +218,15 @@ def main():
           "Corpus: local labeled vulnapp (SQLi/XSS/SSRF, vulnerable + safe).",
           "`found` vs ground truth → precision/recall/F1. Lower time is better.", "",
           "## Per-tool summary", "",
-          "| Tool | Scope (n) | TP | FP | FN | TN | Precision | Recall | F1 | Total time |",
-          "|------|-----------|----|----|----|----|-----------|--------|----|-----------|"]
+          "| Tool | Scope (n) | TP | FP | FN | TN | Precision | Recall (TPR) | FPR | F1 | OWASP Score (TPR-FPR) | Total time |",
+          "|------|-----------|----|----|----|----|-----------|--------------|-----|----|----------------------|-----------|"]
     for tool, s in summaries.items():
         if s["n"] == 0:
             continue
         md.append(
             f"| {tool} | {s['n']} | {s['tp']} | {s['fp']} | {s['fn']} | {s['tn']} | "
-            f"{s['precision']:.2f} | {s['recall']:.2f} | {s['f1']:.2f} | {s['total_t']}s |"
+            f"{s['precision']:.2f} | {s['tpr']:.2f} | {s['fpr']:.2f} | {s['f1']:.2f} | "
+            f"**{s['bas']:.2f}** | {s['total_t']}s |"
         )
     md += ["", "## Per-target detail", "",
            "| Target | Type | Expected | " +
