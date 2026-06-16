@@ -1827,6 +1827,21 @@ impl Engine {
     ) -> anyhow::Result<()> {
         // Removed verbose methodology - enterprise tools are concise
 
+        // Start the built-in OOB interaction listener if an OOB callback domain
+        // was configured (enables blind SSRF correlation). The callback domain
+        // supplied via --ssrf-callback must route to this host:port.
+        if let Some(ref domain) = self.ctx.ssrf_config.oob_callback {
+            const OOB_BIND: &str = "0.0.0.0:8888";
+            match crate::ssrf::oob::start_oob_server(OOB_BIND).await {
+                Ok(addr) => tracing::info!(
+                    "OOB interaction listener started on {} (ensure callback domain '{}' routes here)",
+                    addr,
+                    domain
+                ),
+                Err(e) => tracing::warn!("Failed to start OOB listener on {}: {}", OOB_BIND, e),
+            }
+        }
+
         // Check if we have a direct parameter first (takes priority)
         if let Some(ref param) = self.ctx.direct_param {
             // Direct parameter testing

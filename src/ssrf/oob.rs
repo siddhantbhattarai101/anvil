@@ -3,7 +3,84 @@
 //! This module provides functionality for detecting blind SSRF through
 //! out-of-band callbacks (DNS or HTTP).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Process-global log of OOB interactions (one line per received request:
+/// request-line + Host header). Shared by the built-in listener and every
+/// blind-vuln check (SSRF, XSS, SQLi DNS/HTTP) so they can correlate by id.
+static OOB_LOG: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
+
+fn oob_log() -> &'static Arc<Mutex<Vec<String>>> {
+    OOB_LOG.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+}
+
+/// Whether any recorded interaction contains `identifier` (in its path or Host).
+pub fn oob_was_hit(identifier: &str) -> bool {
+    oob_log()
+        .lock()
+        .map(|g| g.iter().any(|line| line.contains(identifier)))
+        .unwrap_or(false)
+}
+
+/// Record an interaction directly (used by tests and by other transports).
+pub fn record_oob_interaction(line: impl Into<String>) {
+    if let Ok(mut g) = oob_log().lock() {
+        g.push(line.into());
+    }
+}
+
+/// Start the built-in OOB HTTP interaction listener on `bind_addr`
+/// (e.g. "0.0.0.0:8888"). Spawns a background accept loop that records every
+/// incoming request so blind callbacks can be correlated. Returns the actual
+/// bound address. The user's callback domain must route to this host/port.
+pub async fn start_oob_server(bind_addr: &str) -> std::io::Result<String> {
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind(bind_addr).await?;
+    let actual = listener.local_addr()?.to_string();
+    let log = oob_log().clone();
+
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _peer)) => {
+                    let log = log.clone();
+                    tokio::spawn(handle_oob_conn(stream, log));
+                }
+                Err(e) => {
+                    tracing::warn!("OOB listener accept error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(actual)
+}
+
+async fn handle_oob_conn(mut stream: tokio::net::TcpStream, log: Arc<Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut buf = [0u8; 8192];
+    if let Ok(n) = stream.read(&mut buf).await {
+        if n > 0 {
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let first_line = req.lines().next().unwrap_or("");
+            let host = req
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("host:"))
+                .unwrap_or("");
+            if let Ok(mut g) = log.lock() {
+                g.push(format!("{} | {}", first_line.trim(), host.trim()));
+            }
+            tracing::info!("OOB interaction: {} {}", first_line.trim(), host.trim());
+        }
+    }
+    let _ = stream
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+        .await;
+}
 
 /// OOB callback generator
 #[derive(Debug, Clone)]
@@ -19,11 +96,6 @@ impl OobCallbackGenerator {
     
     /// Generate a unique callback URL with identifier
     pub fn generate_callback_url(&self, identifier: &str) -> String {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        
         format!("http://{}.{}", identifier, self.callback_domain)
     }
     
@@ -69,49 +141,38 @@ impl OobCallbackGenerator {
     }
 }
 
-/// OOB callback listener (mock for now - in production, this would be a real server)
+/// OOB callback listener. Queries the process-global interaction log populated
+/// by the built-in listener (see [`start_oob_server`]).
 #[derive(Debug, Clone)]
 pub struct OobCallbackListener {
     pub callback_domain: String,
-    // In production, this would track received callbacks
-    // For now, we'll simulate it
 }
 
 impl OobCallbackListener {
     pub fn new(callback_domain: String) -> Self {
         Self { callback_domain }
     }
-    
-    /// Check if a callback was received (mock implementation)
-    /// In production, this would query a real callback server
+
+    /// Check whether a callback for `identifier` has been received.
     pub async fn check_callback(&self, identifier: &str) -> bool {
-        // TODO: In production, implement actual callback checking
-        // This would query your callback server's API
-        
-        tracing::debug!("Checking for OOB callback: {}", identifier);
-        
-        // For now, return false (no callback received)
-        // In real implementation:
-        // 1. Query callback server API
-        // 2. Check if DNS/HTTP request was received
-        // 3. Return true if callback was received
-        
-        false
+        let hit = oob_was_hit(identifier);
+        tracing::debug!("Checking for OOB callback {}: {}", identifier, hit);
+        hit
     }
-    
-    /// Wait for callback with timeout (mock implementation)
+
+    /// Wait up to `timeout_secs` for a callback, polling the interaction log.
     pub async fn wait_for_callback(&self, identifier: &str, timeout_secs: u64) -> bool {
-        tracing::debug!(
-            "Waiting for OOB callback: {} (timeout: {}s)",
-            identifier,
-            timeout_secs
-        );
-        
-        // Sleep for a short time to simulate waiting
-        tokio::time::sleep(tokio::time::Duration::from_secs(timeout_secs.min(2))).await;
-        
-        // Check if callback was received
-        self.check_callback(identifier).await
+        let start = Instant::now();
+        let timeout = Duration::from_secs(timeout_secs);
+        loop {
+            if oob_was_hit(identifier) {
+                return true;
+            }
+            if start.elapsed() >= timeout {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
     }
 }
 
@@ -159,10 +220,47 @@ mod tests {
     fn test_generate_variants() {
         let generator = OobCallbackGenerator::new("attacker.com".to_string());
         let variants = generator.generate_callback_variants("test");
-        
+
         assert!(!variants.is_empty());
         assert!(variants.iter().any(|v| v.contains("http://")));
         assert!(variants.iter().any(|v| v.contains("https://")));
+    }
+
+    #[test]
+    fn test_oob_log_correlation() {
+        let id = "ssrf-deadbeef-unit";
+        assert!(!oob_was_hit(id));
+        // Simulate an inbound interaction carrying the identifier in the path.
+        record_oob_interaction(format!("GET /{} HTTP/1.1 | Host: x.oast.test", id));
+        assert!(oob_was_hit(id));
+        // An unrelated identifier must not match.
+        assert!(!oob_was_hit("ssrf-not-seen"));
+    }
+
+    #[tokio::test]
+    async fn test_oob_server_records_real_request() {
+        use tokio::io::AsyncWriteExt;
+
+        // Bind on an ephemeral port and fire a real HTTP request at it.
+        let addr = start_oob_server("127.0.0.1:0").await.expect("bind oob server");
+        let id = "ssrf-livetest-9f8e7d";
+        assert!(!oob_was_hit(id));
+
+        let mut stream = tokio::net::TcpStream::connect(&addr).await.expect("connect");
+        let req = format!(
+            "GET /{} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            id, addr
+        );
+        stream.write_all(req.as_bytes()).await.expect("send");
+
+        // The accept/record happens on a spawned task; poll briefly.
+        for _ in 0..40 {
+            if oob_was_hit(id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(oob_was_hit(id), "OOB listener did not record the interaction");
     }
 }
 
