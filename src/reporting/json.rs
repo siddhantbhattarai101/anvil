@@ -39,7 +39,7 @@ pub fn render(findings: &[Finding]) -> anyhow::Result<String> {
     let report = Report {
         scan_metadata: ScanMetadata {
             tool: "ANVIL".to_string(),
-            version: "0.4.0".to_string(),
+            version: "0.5.0".to_string(),
             scan_date: chrono::Utc::now().to_rfc3339(),
             report_format: "application/json".to_string(),
         },
