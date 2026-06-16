@@ -49,6 +49,26 @@ Read-out:
   verification rather than fuzzing.
 - **SSRF: 1/1, no FP.**
 
+### XSS (headless execution proof, vs dalfox)
+
+12-case corpus — 9 vulnerable contexts (HTML body, single-/double-quote
+attribute, JS string, HTML comment, href/URL, `<>`-filtered attribute, POST-body,
+DOM `innerHTML`) and 3 safe (escaped body, escaped attribute, CSP-blocked
+reflection):
+
+| Tool | Scope (n) | Precision | Recall | F1 | Total time |
+|------|-----------|-----------|--------|----|-----------|
+| anvil  | 12 | **1.00** | 0.89 | **0.94** | 57.2s |
+| dalfox | 12 | 0.89 | 0.89 | 0.89 | 131.0s |
+
+**ANVIL beats dalfox — F1 0.94 vs 0.89, perfect precision, ~2.3× faster.** The
+decisive case is **CSP**: ANVIL drives a real headless browser and is CSP-aware,
+so it correctly does *not* flag a reflection that a restrictive
+Content-Security-Policy blocks from executing — dalfox false-positives on it.
+ANVIL catches every reflected context including comment escape and `<>`-filtered
+attribute breakout (`" autofocus onfocus=…`). The one shared miss is POST-body
+reflection (neither tool tests it here).
+
 ### sqli-labs (canonical MySQL target, harder)
 
 Run against [sqli-labs](https://github.com/Audi-1/sqli-labs) (real MySQL backend):
