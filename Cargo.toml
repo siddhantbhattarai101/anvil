@@ -29,3 +29,6 @@ lazy_static = "1.4"
 md5 = "0.7"
 sha1 = "0.10"
 hex = "0.4"
+# Headless-browser XSS execution verification (CDP via system Chrome).
+chromiumoxide = "0.9"
+futures = "0.3"

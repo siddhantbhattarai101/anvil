@@ -194,6 +194,10 @@ impl Engine {
         if self.ctx.profile.has(Capability::Xss) {
             tracing::info!("Running Professional Reflected XSS scan...");
             self.run_professional_xss_scan(&client, &target_url, &mut reporter).await?;
+
+            // Confirm reflected XSS by real JavaScript execution in a headless
+            // browser (upgrades findings to "Confirmed (Active Test)").
+            self.run_xss_execution_verify(&target_url, &mut reporter).await?;
         }
         
         // Stored/Persistent XSS Detection
@@ -1581,6 +1585,109 @@ impl Engine {
         stored_engine.run(client, target_url, &param, reporter).await?;
 
         Ok(())
+    }
+
+    /// Confirm reflected XSS by driving a headless browser: inject canary
+    /// payloads that set a window variable on execution, then read it back. Adds
+    /// a "Confirmed (Active Test)" finding for any parameter that executes JS.
+    /// Silently skipped if no browser is available (heuristic results stand).
+    async fn run_xss_execution_verify(
+        &self,
+        target_url: &Url,
+        reporter: &mut crate::reporting::reporter::Reporter,
+    ) -> anyhow::Result<()> {
+        if crate::xss::headless::find_chrome().is_none() {
+            tracing::debug!("No headless browser available; skipping XSS execution verification");
+            return Ok(());
+        }
+
+        // Parameters to verify: the direct param, else every query parameter.
+        let mut params: Vec<String> = Vec::new();
+        if let Some(p) = &self.ctx.direct_param {
+            params.push(p.clone());
+        } else {
+            for (k, _) in target_url.query_pairs() {
+                if !params.contains(&k.to_string()) {
+                    params.push(k.to_string());
+                }
+            }
+        }
+        if params.is_empty() {
+            return Ok(());
+        }
+
+        let verifier = match crate::xss::headless::HeadlessVerifier::launch().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Headless XSS verifier unavailable: {}", e);
+                return Ok(());
+            }
+        };
+
+        for param in &params {
+            match verifier.verify_param(target_url, param).await {
+                Ok(Some(proof)) => {
+                    tracing::warn!(
+                        "[XSS CONFIRMED - ACTIVE TEST] param '{}' executes JS via: {}",
+                        param,
+                        proof.payload
+                    );
+                    self.add_headless_xss_finding(target_url, param, &proof, reporter);
+                }
+                Ok(None) => {
+                    tracing::info!("No JS execution confirmed for param '{}'", param)
+                }
+                Err(e) => tracing::warn!("Headless verify error for '{}': {}", param, e),
+            }
+        }
+
+        verifier.close().await;
+        Ok(())
+    }
+
+    /// Add a headless-verified reflected-XSS finding (execution proven).
+    fn add_headless_xss_finding(
+        &self,
+        url: &Url,
+        param: &str,
+        proof: &crate::xss::headless::XssProof,
+        reporter: &mut crate::reporting::reporter::Reporter,
+    ) {
+        use crate::reporting::model::{Finding, Severity};
+        reporter.add(Finding {
+            vuln_type: "Cross-Site Scripting (XSS)".to_string(),
+            technique: "Reflected XSS (headless-verified)".to_string(),
+            endpoint: url.path().to_string(),
+            parameter: Some(param.to_string()),
+            confidence: 0.99,
+            severity: Severity::High,
+            evidence: format!(
+                "JavaScript execution confirmed in a real browser (Chrome headless via CDP).\n\
+                 Parameter: {}\n\
+                 Executing payload: {}",
+                param, proof.payload
+            ),
+            http_method: "GET".to_string(),
+            database: None,
+            cwe: "CWE-79".to_string(),
+            cvss_score: Some(8.2),
+            description:
+                "Reflected Cross-Site Scripting confirmed by actual JavaScript execution in a \
+                 headless browser (not merely payload reflection)."
+                    .to_string(),
+            impact:
+                "An attacker can execute arbitrary JavaScript in victims' browsers, enabling \
+                 session hijacking, credential theft, and account takeover."
+                    .to_string(),
+            remediation:
+                "Apply context-aware output encoding and a strict Content-Security-Policy."
+                    .to_string(),
+            references: vec![
+                "https://owasp.org/www-community/attacks/xss/".to_string(),
+                "https://cwe.mitre.org/data/definitions/79.html".to_string(),
+            ],
+            payload_sample: Some(proof.payload.clone()),
+        });
     }
 
     /// Run blind XSS detection: inject OOB payloads carrying unique correlation
