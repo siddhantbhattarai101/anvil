@@ -11,6 +11,7 @@
 //! - os_shell: OS command execution
 
 pub mod core;
+pub mod errors;
 pub mod request;
 pub mod techniques;
 pub mod tamper;

