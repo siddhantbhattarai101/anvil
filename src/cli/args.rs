@@ -48,6 +48,10 @@ pub struct Cli {
     #[arg(long, help_heading = "CORE FEATURES")]
     pub ssrf: bool,
 
+    /// Enable OS command injection scanning (CWE-78)
+    #[arg(long, help_heading = "CORE FEATURES")]
+    pub cmdi: bool,
+
     // ═══════════════════════════════════════════════════════════════════
     // XSS DETECTION OPTIONS
     // ═══════════════════════════════════════════════════════════════════

@@ -1,4 +1,5 @@
 mod cli;
+mod cmdi;
 mod core;
 mod http;
 mod payload;

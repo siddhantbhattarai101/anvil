@@ -111,6 +111,7 @@ impl Context {
                 || cli.xss_all
                 || cli.ssrf
                 || cli.ssrf_all
+                || cli.cmdi
                 || has_enumeration;
 
             // Enable fingerprint and crawl by default if no specific module requested
@@ -184,6 +185,9 @@ impl Context {
             // SSRF capabilities
             if cli.ssrf || cli.ssrf_all {
                 profile.enable(Capability::Ssrf);
+            }
+            if cli.cmdi {
+                profile.enable(Capability::Cmdi);
             }
 
             profile
