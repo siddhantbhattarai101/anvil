@@ -247,8 +247,17 @@ impl Engine {
         // Create SQLi engine and detect injection
         tracing::info!("Phase 1: Detecting SQL injection vulnerability...");
         
-        let mut engine = crate::sqli::SqliEngine::new(client);
-        
+        let sqli_point = crate::sqli::request::InjectionPoint::from_context(
+            reqwest::Method::from_bytes(self.ctx.http_method.as_bytes())
+                .unwrap_or(reqwest::Method::GET),
+            target_url.clone(),
+            &param_name,
+            self.ctx.post_data.clone(),
+            Vec::new(), // auth cookies/headers are carried by the HTTP client
+            Vec::new(),
+        );
+        let mut engine = crate::sqli::SqliEngine::with_injection_point(client, sqli_point);
+
         if !engine.detect(target_url, &param_name).await? {
             tracing::warn!("No SQL injection vulnerability detected");
             tracing::info!("Try adjusting --level and --risk for more thorough testing");
@@ -519,7 +528,17 @@ impl Engine {
             };
 
             for param in &ep.parameters {
-                let mut engine = crate::sqli::SqliEngine::new(client);
+                let sqli_point = crate::sqli::request::InjectionPoint::from_context(
+                    reqwest::Method::from_bytes(self.ctx.http_method.as_bytes())
+                        .unwrap_or(reqwest::Method::GET),
+                    base_url.clone(),
+                    param,
+                    self.ctx.post_data.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                );
+                let mut engine =
+                    crate::sqli::SqliEngine::with_injection_point(client, sqli_point);
                 if engine.detect(&base_url, param).await? {
                     all_results.push(SqliResult {
                         endpoint: base_url.to_string(),

@@ -90,6 +90,10 @@ pub struct SqliEngine<'a> {
     client: &'a HttpClient,
     url: Option<Url>,
     parameter: Option<String>,
+    /// Optional injection-point template. When set, every request injects at the
+    /// configured location (form/JSON body, cookie, header) instead of the URL
+    /// query string. When `None`, falls back to query-string GET injection.
+    injection: Option<request::InjectionPoint>,
     pub vector: Option<UnionVector>,
     pub db_type: DBMS,
 }
@@ -100,8 +104,31 @@ impl<'a> SqliEngine<'a> {
             client,
             url: None,
             parameter: None,
+            injection: None,
             vector: None,
             db_type: DBMS::Unknown,
+        }
+    }
+
+    /// Construct an engine that injects at the given injection point (e.g. a
+    /// POST form/JSON field) rather than the default URL query string.
+    pub fn with_injection_point(client: &'a HttpClient, point: request::InjectionPoint) -> Self {
+        Self {
+            client,
+            url: None,
+            parameter: None,
+            injection: Some(point),
+            vector: None,
+            db_type: DBMS::Unknown,
+        }
+    }
+
+    /// Build a `Request` for the given URL/param, honouring the injection-point
+    /// template if one was configured.
+    fn make_request(&self, url: &Url, param: &str) -> Request<'a> {
+        match &self.injection {
+            Some(point) => Request::with_point(self.client, point.clone()),
+            None => Request::new(self.client, url.clone(), param.to_string()),
         }
     }
 
@@ -110,7 +137,7 @@ impl<'a> SqliEngine<'a> {
         self.url = Some(url.clone());
         self.parameter = Some(param.to_string());
         
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
 
         // Try UNION-based first (most powerful)
         tracing::info!("Testing UNION-based SQL injection...");
@@ -141,7 +168,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Get current database
     pub async fn get_current_db(&self, url: &Url, param: &str) -> Result<Option<String>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             let result = get_current_db(&request, v).await?;
@@ -154,7 +181,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Get all databases
     pub async fn get_dbs(&self, url: &Url, param: &str) -> Result<Vec<String>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             return get_databases(&request, v).await;
@@ -164,7 +191,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Get tables in a database
     pub async fn get_tables(&self, url: &Url, param: &str, database: &str) -> Result<Vec<String>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             return get_tables(&request, v, database).await;
@@ -174,7 +201,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Get columns in a table
     pub async fn get_columns(&self, url: &Url, param: &str, database: &str, table: &str) -> Result<Vec<String>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             return get_columns(&request, v, database, table).await;
@@ -184,7 +211,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Dump table data
     pub async fn dump_table(&self, url: &Url, param: &str, database: &str, table: &str, columns: &[String]) -> Result<Vec<Vec<String>>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             return dump_table(&request, v, database, table, columns).await;
