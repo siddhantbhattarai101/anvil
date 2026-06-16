@@ -72,11 +72,11 @@ impl HeadlessVerifier {
         })
     }
 
-    /// Navigate to `url` and report whether the canary `token` executed.
-    async fn token_executed(&self, url: &str, token: &str) -> Result<bool> {
+    /// Navigate to `url`, wait `settle_ms` for execution (and any navigation),
+    /// and report whether the canary `token` ran in the resulting page.
+    async fn run_canary(&self, url: &str, token: &str, settle_ms: u64) -> Result<bool> {
         let page = self.browser.new_page(url).await?;
-        // Give event-driven payloads (onerror/onload) time to fire.
-        tokio::time::sleep(Duration::from_millis(350)).await;
+        tokio::time::sleep(Duration::from_millis(settle_ms)).await;
         let script = format!("window.__ANVIL_XSS__ === '{}'", token);
         let executed = match page.evaluate(script).await {
             Ok(r) => r.into_value::<bool>().unwrap_or(false),
@@ -84,6 +84,12 @@ impl HeadlessVerifier {
         };
         let _ = page.close().await;
         Ok(executed)
+    }
+
+    /// Navigate to `url` and report whether the canary `token` executed.
+    async fn token_executed(&self, url: &str, token: &str) -> Result<bool> {
+        // 350ms is enough for inline/event-handler (onerror/onload) payloads.
+        self.run_canary(url, token, 350).await
     }
 
     /// Verify whether `param` on `base_url` is XSS-executable. Tries a set of
@@ -109,11 +115,78 @@ impl HeadlessVerifier {
         Ok(None)
     }
 
+    /// Verify whether `param` in a POST body to `action_url` is XSS-executable.
+    /// Builds an auto-submitting form (carrying the canary in the body) as a
+    /// `data:` URL, lets the headless browser POST it, and checks whether the
+    /// canary executed in the response page. `body_params` are the other form
+    /// fields to send alongside.
+    pub async fn verify_param_post(
+        &self,
+        action_url: &str,
+        param: &str,
+        body_params: &[(String, String)],
+    ) -> Result<Option<XssProof>> {
+        let token = unique_token();
+        for canary in canary_payloads(&token) {
+            let mut inputs = String::new();
+            let mut injected = false;
+            for (k, v) in body_params {
+                let val = if k == param {
+                    injected = true;
+                    canary.as_str()
+                } else {
+                    v.as_str()
+                };
+                inputs.push_str(&format!(
+                    "<input name=\"{}\" value=\"{}\">",
+                    attr_escape(k),
+                    attr_escape(val)
+                ));
+            }
+            if !injected {
+                inputs.push_str(&format!(
+                    "<input name=\"{}\" value=\"{}\">",
+                    attr_escape(param),
+                    attr_escape(&canary)
+                ));
+            }
+            let form = format!(
+                "<html><body><form id=\"f\" action=\"{}\" method=\"POST\">{}</form>\
+                 <script>document.getElementById('f').submit()</script></body></html>",
+                action_url, inputs
+            );
+            let data_url = format!("data:text/html,{}", urlencoding::encode(&form));
+            // Longer settle: the form submits, the browser navigates to the
+            // target response, and only then can the canary execute.
+            let executed = tokio::time::timeout(
+                Duration::from_secs(20),
+                self.run_canary(&data_url, &token, 900),
+            )
+            .await
+            .unwrap_or(Ok(false))
+            .unwrap_or(false);
+            if executed {
+                return Ok(Some(XssProof { payload: canary }));
+            }
+        }
+        Ok(None)
+    }
+
     /// Shut the browser down.
     pub async fn close(mut self) {
         let _ = self.browser.close().await;
         self.handler_task.abort();
     }
+}
+
+/// HTML-escape a string for safe inclusion in a form attribute value. The
+/// browser decodes the entities on submit, so the server receives the raw value.
+fn attr_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn unique_token() -> String {

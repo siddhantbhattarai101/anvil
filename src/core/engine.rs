@@ -1669,10 +1669,29 @@ impl Engine {
             return Ok(());
         }
 
-        // Parameters to verify: the direct param, else every query parameter.
+        // POST-body verification when a POST body is supplied.
+        let is_post = self.ctx.http_method.eq_ignore_ascii_case("POST")
+            && self.ctx.post_data.is_some();
+        let body_params: Vec<(String, String)> = if is_post {
+            url::form_urlencoded::parse(
+                self.ctx.post_data.as_deref().unwrap_or("").as_bytes(),
+            )
+            .into_owned()
+            .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Parameters to verify: the direct param, else the body/query parameters.
         let mut params: Vec<String> = Vec::new();
         if let Some(p) = &self.ctx.direct_param {
             params.push(p.clone());
+        } else if is_post {
+            for (k, _) in &body_params {
+                if !params.contains(k) {
+                    params.push(k.clone());
+                }
+            }
         } else {
             for (k, _) in target_url.query_pairs() {
                 if !params.contains(&k.to_string()) {
@@ -1693,7 +1712,14 @@ impl Engine {
         };
 
         for param in &params {
-            match verifier.verify_param(target_url, param).await {
+            let result = if is_post {
+                verifier
+                    .verify_param_post(target_url.as_str(), param, &body_params)
+                    .await
+            } else {
+                verifier.verify_param(target_url, param).await
+            };
+            match result {
                 Ok(Some(proof)) => {
                     tracing::warn!(
                         "[XSS CONFIRMED - ACTIVE TEST] param '{}' executes JS via: {}",
