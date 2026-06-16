@@ -49,6 +49,29 @@ Read-out:
   verification rather than fuzzing.
 - **SSRF: 1/1, no FP.**
 
+### sqli-labs (canonical MySQL target, harder)
+
+Run against [sqli-labs](https://github.com/Audi-1/sqli-labs) (real MySQL backend):
+
+```bash
+docker run -d --rm --name sqli-labs -p 8081:80 acgpiano/sqli-labs
+curl -s http://127.0.0.1:8081/sql-connections/setup-db.php   # init DB
+python3 benchmark/run_benchmark.py --manifest manifest_sqlilabs.json \
+        --base http://127.0.0.1:8081 --only sqli --tools anvil,sqlmap
+```
+
+| Tool | Scope (n) | Precision | Recall | F1 | Total time |
+|------|-----------|-----------|--------|----|-----------|
+| anvil  | 10 | 1.00 | 0.90 | **0.95** | 150.9s |
+| sqlmap | 10 | 1.00 | 0.90 | 0.95 | 106.4s |
+
+**ANVIL matches sqlmap on the canonical SQLi benchmark — 9/10 each, F1 0.95.**
+ANVIL catches single-/double-quote string, numeric, parenthesised contexts
+(`('$id')`, `("$id")`), blind, boolean-blind, time-based, and the POST login form
+(multi-location injection). Both miss only Less-10 (double-quote *time-based*) at
+`--level 1 --risk 1` — sqlmap needs a higher level for it too. ANVIL is slower
+(time-based confirmatory sleeps); a `--release` build narrows the gap.
+
 ### Before → after (the harness driving a fix)
 
 The first run scored ANVIL **recall 0.67 / F1 0.80** — SQLi was only 2/5 because

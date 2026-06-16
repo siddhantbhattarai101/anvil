@@ -50,6 +50,11 @@ def target_url(base, t):
     return f"{base}{t['path']}"  # POST: param goes in body
 
 
+def post_body(t):
+    """Body for a POST target: an explicit `body` (full form) or param=value."""
+    return t.get("body", f"{t['param']}={t['value']}")
+
+
 # ----------------------------- ANVIL runner -----------------------------
 def anvil_verdict(anvil_bin, base, t, out_json):
     url = target_url(base, t)
@@ -57,7 +62,7 @@ def anvil_verdict(anvil_bin, base, t, out_json):
     cmd = [str(anvil_bin), "-t", url, "-p", t["param"], flag,
            "--format", "json", "-o", out_json]
     if t["method"] == "POST":
-        cmd += ["--method", "POST", "--data", f"{t['param']}={t['value']}"]
+        cmd += ["--method", "POST", "--data", post_body(t)]
     out, secs = run(cmd, TIMEOUTS["anvil"])
 
     found = False
@@ -91,7 +96,7 @@ def sqlmap_verdict(base, t):
            "--level=1", "--risk=1", "--technique=BEUST",
            "--flush-session", "--disable-coloring"]
     if t["method"] == "POST":
-        cmd += ["--data", f"{t['param']}={t['value']}"]
+        cmd += ["--data", post_body(t)]
     out, secs = run(cmd, TIMEOUTS["sqlmap"])
     pos = ["is vulnerable", "appears to be injectable",
            "injection point(s) with a total", "the back-end DBMS is",
@@ -142,19 +147,27 @@ def main():
     ap.add_argument("--tools", default="anvil,sqlmap,dalfox")
     ap.add_argument("--anvil-bin", default=str(DEFAULT_ANVIL))
     ap.add_argument("--only", default="sqli,xss,ssrf")
+    ap.add_argument("--manifest", default="manifest.json",
+                    help="ground-truth manifest file (in benchmark/)")
+    ap.add_argument("--base", default=None,
+                    help="external target base URL (e.g. sqli-labs). Skips the "
+                         "built-in vulnapp.")
     args = ap.parse_args()
 
     tools = set(args.tools.split(","))
     types = set(args.only.split(","))
-    manifest = json.loads((HERE / "manifest.json").read_text())
-    base = f"http://127.0.0.1:{args.port}"
+    manifest = json.loads((HERE / args.manifest).read_text())
 
-    # start the vulnerable app
-    srv = subprocess.Popen(
-        [sys.executable, str(HERE / "targets" / "vulnapp.py"), str(args.port)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    try:
+    # External base (e.g. sqli-labs) → don't launch vulnapp.
+    srv = None
+    if args.base:
+        base = args.base.rstrip("/")
+    else:
+        base = f"http://127.0.0.1:{args.port}"
+        srv = subprocess.Popen(
+            [sys.executable, str(HERE / "targets" / "vulnapp.py"), str(args.port)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
         for _ in range(50):
             try:
                 urllib.request.urlopen(f"{base}/health", timeout=1).read()
@@ -165,6 +178,7 @@ def main():
             print("vulnapp failed to start", file=sys.stderr)
             return 1
 
+    try:
         rows = []
         for t in manifest["targets"]:
             if t["type"] not in types:
@@ -186,11 +200,12 @@ def main():
             )
             print(f"[{t['type']:>4}] {t['id']:<22} exp={t['expected']:<10} {cells}", flush=True)
     finally:
-        srv.terminate()
-        try:
-            srv.wait(timeout=5)
-        except Exception:
-            srv.kill()
+        if srv is not None:
+            srv.terminate()
+            try:
+                srv.wait(timeout=5)
+            except Exception:
+                srv.kill()
 
     # ---- reports ----
     summaries = {tool: score(rows, tool) for tool in tools}
