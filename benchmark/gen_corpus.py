@@ -19,7 +19,8 @@ HERE = Path(__file__).resolve().parent
 def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 250
     targets = []
-    for typ, base, val in (("sqli", "/bench/sqli", "1"), ("xss", "/bench/xss", "test")):
+    for typ, base, val in (("sqli", "/bench/sqli", "1"), ("xss", "/bench/xss", "test"),
+                           ("cmdi", "/bench/cmdi", "x")):
         for case in range(n):
             real = case % 2 == 0
             targets.append({

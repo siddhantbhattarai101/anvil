@@ -31,6 +31,7 @@ Routes:
 import html
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -161,6 +162,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send("<p>Not found</p>")
             finally:
                 conn.close()
+
+        if path.startswith("/bench/cmdi/"):
+            case = _bench_case("/bench/cmdi/")
+            qv = p("q", "x")
+            real = (case % 2 == 0)
+            try:
+                if real:  # shell=True with concatenation -> vulnerable
+                    out = subprocess.run(
+                        f"echo out {qv}", shell=True, capture_output=True,
+                        text=True, timeout=8,
+                    ).stdout
+                else:  # arg array, no shell -> safe
+                    out = subprocess.run(
+                        ["echo", "out", qv], capture_output=True, text=True, timeout=8
+                    ).stdout
+            except Exception:
+                out = "err"
+            return self._send(f"<pre>{out}</pre>")
 
         if path.startswith("/bench/xss/"):
             case = _bench_case("/bench/xss/")

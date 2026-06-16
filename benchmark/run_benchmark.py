@@ -58,7 +58,7 @@ def post_body(t):
 # ----------------------------- ANVIL runner -----------------------------
 def anvil_verdict(anvil_bin, base, t, out_json):
     url = target_url(base, t)
-    flag = {"sqli": "--sqli", "xss": "--xss", "ssrf": "--ssrf"}[t["type"]]
+    flag = {"sqli": "--sqli", "xss": "--xss", "ssrf": "--ssrf", "cmdi": "--cmdi"}[t["type"]]
     cmd = [str(anvil_bin), "-t", url, "-p", t["param"], flag,
            "--format", "json", "-o", out_json]
     if t["method"] == "POST":
@@ -68,7 +68,7 @@ def anvil_verdict(anvil_bin, base, t, out_json):
     found = False
     # JSON findings (reporter-backed: XSS/SSRF, and SQLi sitemap mode)
     kw = {"sqli": ["sql"], "xss": ["xss", "scripting"],
-          "ssrf": ["ssrf", "request forgery"]}[t["type"]]
+          "ssrf": ["ssrf", "request forgery"], "cmdi": ["command"]}[t["type"]]
     try:
         data = json.loads(Path(out_json).read_text())
         for f in data.get("findings", []):
@@ -83,6 +83,7 @@ def anvil_verdict(anvil_bin, base, t, out_json):
         "sqli": ["SQL injection confirmed"],
         "xss": ["CONFIRMED - ACTIVE TEST"],
         "ssrf": ["[SSRF DETECTED]"],
+        "cmdi": ["[CMDI CONFIRMED]"],
     }[t["type"]]
     if any(m in out for m in markers):
         found = True
