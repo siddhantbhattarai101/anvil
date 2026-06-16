@@ -93,6 +93,53 @@ impl InjectionPoint {
         }
     }
 
+    /// The current (original) value of the target parameter at its location.
+    /// Used to seed boundary payloads from the real value so injections in a
+    /// string context (e.g. `WHERE name='admin'`) preserve the row match.
+    pub fn original_value(&self) -> String {
+        match self.location {
+            InjectionLocation::Query => self
+                .url
+                .query_pairs()
+                .find(|(k, _)| k == self.param.as_str())
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_default(),
+            InjectionLocation::Form => self
+                .body
+                .as_deref()
+                .and_then(|b| {
+                    url::form_urlencoded::parse(b.as_bytes())
+                        .find(|(k, _)| k == self.param.as_str())
+                        .map(|(_, v)| v.to_string())
+                })
+                .unwrap_or_default(),
+            InjectionLocation::Json => self
+                .body
+                .as_deref()
+                .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+                .and_then(|v| {
+                    let mut cur = &v;
+                    for part in self.param.split('.') {
+                        cur = cur.get(part)?;
+                    }
+                    cur.as_str().map(|s| s.to_string())
+                })
+                .unwrap_or_default(),
+            InjectionLocation::Cookie => self
+                .cookies
+                .iter()
+                .find(|(k, _)| k == &self.param)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default(),
+            InjectionLocation::Header => self
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(&self.param))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default(),
+        }
+    }
+
     /// Build the HTTP request for this injection point with `payload` placed at
     /// the configured location.
     pub fn build_request(&self, payload: &str) -> HttpRequest {
@@ -290,6 +337,11 @@ impl<'a> Request<'a> {
         &self.point
     }
 
+    /// The original value of the injected parameter (for boundary seeding).
+    pub fn original_value(&self) -> String {
+        self.point.original_value()
+    }
+
     /// Send a payload and get the response body.
     pub async fn query_page(&self, payload: &str) -> Result<String> {
         let req = self.point.build_request(payload);
@@ -374,6 +426,23 @@ mod tests {
         let cookie = header(&req, "cookie").unwrap();
         assert!(cookie.contains("sid=payload123"));
         assert!(cookie.contains("role=user"));
+    }
+
+    #[test]
+    fn original_value_extracted_per_location() {
+        let qp = InjectionPoint::query(Url::parse("http://t/a?name=admin&x=1").unwrap(), "name");
+        assert_eq!(qp.original_value(), "admin");
+
+        let mut fp = point(InjectionLocation::Form, "user");
+        fp.body = Some("user=bob&page=2".into());
+        assert_eq!(fp.original_value(), "bob");
+
+        let mut jp = point(InjectionLocation::Json, "filter.name");
+        jp.body = Some(r#"{"filter":{"name":"alice"}}"#.into());
+        assert_eq!(jp.original_value(), "alice");
+
+        let cp = point(InjectionLocation::Cookie, "sid");
+        assert_eq!(cp.original_value(), "abc");
     }
 
     #[test]

