@@ -92,6 +92,25 @@ ANVIL catches single-/double-quote string, numeric, parenthesised contexts
 the POST login form (multi-location injection). ANVIL is slower
 (time-based confirmatory sleeps); a `--release` build narrows the gap.
 
+### SSRF (evidence-driven, standalone)
+
+No clean yes/no peer CLI exists for SSRF, so ANVIL runs standalone. 5-case corpus —
+3 vulnerable (fetch-and-return, **blind** fetch-with-no-output, POST-body) and 2
+safe (strict allowlist, and an endpoint that **echoes the URL but never fetches
+it**):
+
+| Tool | Scope (n) | Precision | Recall | F1 | Total time |
+|------|-----------|-----------|--------|----|-----------|
+| anvil | 5 | **1.00** | **1.00** | **1.00** | 102.4s |
+
+**5/5, F1 1.00, zero false positives.** Two things to note:
+- **Reflection ≠ SSRF.** The reflect-only endpoint (echoes the URL, never fetches)
+  is correctly *not* flagged — the classic SSRF false positive that response-only
+  scanners trip on. ANVIL requires proof of an actual outbound request.
+- **Blind SSRF** (no response evidence) is confirmed **out-of-band**: ANVIL's
+  built-in HTTP interaction listener records the server's fetch of a path-based
+  callback (`--ssrf-callback`). Run with the listener engaged.
+
 ### Before → after (the harness driving a fix)
 
 The first run scored ANVIL **recall 0.67 / F1 0.80** — SQLi was only 2/5 because
