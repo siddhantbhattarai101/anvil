@@ -58,16 +58,17 @@ reflection):
 
 | Tool | Scope (n) | Precision | Recall | F1 | Total time |
 |------|-----------|-----------|--------|----|-----------|
-| anvil  | 12 | **1.00** | 0.89 | **0.94** | 57.2s |
-| dalfox | 12 | 0.89 | 0.89 | 0.89 | 131.0s |
+| anvil  | 12 | **1.00** | **1.00** | **1.00** | 50.9s |
+| dalfox | 12 | 0.89 | 0.89 | 0.89 | 138.0s |
 
-**ANVIL beats dalfox — F1 0.94 vs 0.89, perfect precision, ~2.3× faster.** The
-decisive case is **CSP**: ANVIL drives a real headless browser and is CSP-aware,
-so it correctly does *not* flag a reflection that a restrictive
-Content-Security-Policy blocks from executing — dalfox false-positives on it.
-ANVIL catches every reflected context including comment escape and `<>`-filtered
-attribute breakout (`" autofocus onfocus=…`). The one shared miss is POST-body
-reflection (neither tool tests it here).
+**ANVIL is perfect on this corpus — 9/9, F1 1.00 vs dalfox 0.89, and ~2.7×
+faster.** It catches every reflected context (body, both attribute quote styles,
+JS string, comment escape, href/URL, `<>`-filtered attribute via
+`" autofocus onfocus=…`, DOM `innerHTML`) **plus POST-body** XSS — verified by
+driving the headless browser through an auto-submitting POST form and checking the
+canary executed. Two things separate it from dalfox: it catches POST-body (dalfox
+misses), and it does *not* false-positive on the CSP-blocked reflection (dalfox
+does) because it requires real, CSP-respecting execution.
 
 ### sqli-labs (canonical MySQL target, harder)
 
