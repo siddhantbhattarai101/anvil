@@ -44,13 +44,40 @@ impl SsrfScanner {
                 continue;
             }
 
-            let endpoint_url = match target_url.join(path) {
+            let mut endpoint_url = match target_url.join(path) {
                 Ok(u) => u,
                 Err(e) => {
                     tracing::warn!("Failed to join path '{}': {}", path, e);
                     continue;
                 }
             };
+
+            // `join(path)` drops the query string, leaving candidate
+            // identification nothing to work with and dropping sibling params
+            // that may gate the vulnerable code path. Rebuild the URL preserving
+            // ALL of the target URL's query parameters plus this endpoint's
+            // discovered parameters (so URL-like params are found and tested with
+            // their real values).
+            {
+                use std::collections::HashSet;
+                let mut pairs: Vec<(String, String)> = Vec::new();
+                let mut seen = HashSet::new();
+                for (k, v) in target_url.query_pairs() {
+                    if seen.insert(k.to_string()) {
+                        pairs.push((k.to_string(), v.to_string()));
+                    }
+                }
+                for p in &endpoint.parameters {
+                    if seen.insert(p.clone()) {
+                        pairs.push((p.clone(), "1".to_string()));
+                    }
+                }
+                let mut qp = endpoint_url.query_pairs_mut();
+                qp.clear();
+                for (k, v) in &pairs {
+                    qp.append_pair(k, v);
+                }
+            }
 
             tracing::debug!("Scanning endpoint: {}", endpoint_url);
 
