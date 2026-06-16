@@ -94,6 +94,8 @@ pub struct SqliEngine<'a> {
     /// configured location (form/JSON body, cookie, header) instead of the URL
     /// query string. When `None`, falls back to query-string GET injection.
     injection: Option<request::InjectionPoint>,
+    /// Out-of-band callback domain for DNS-based exfiltration detection.
+    oob_callback: Option<String>,
     pub vector: Option<UnionVector>,
     pub db_type: DBMS,
 }
@@ -105,6 +107,7 @@ impl<'a> SqliEngine<'a> {
             url: None,
             parameter: None,
             injection: None,
+            oob_callback: None,
             vector: None,
             db_type: DBMS::Unknown,
         }
@@ -118,9 +121,16 @@ impl<'a> SqliEngine<'a> {
             url: None,
             parameter: None,
             injection: Some(point),
+            oob_callback: None,
             vector: None,
             db_type: DBMS::Unknown,
         }
+    }
+
+    /// Set the out-of-band callback domain used for DNS-exfiltration detection.
+    pub fn with_oob_callback(mut self, callback: Option<String>) -> Self {
+        self.oob_callback = callback;
+        self
     }
 
     /// Build a `Request` for the given URL/param, honouring the injection-point
@@ -161,6 +171,20 @@ impl<'a> SqliEngine<'a> {
         if let Some(_blind_vector) = check_boolean_blind(&request).await? {
             // Blind is too slow for full enumeration
             return Ok(false);
+        }
+
+        // Out-of-band DNS exfiltration (last resort; needs the OOB DNS listener
+        // running and the callback domain delegated to it).
+        if let Some(ref domain) = self.oob_callback {
+            tracing::info!("Testing DNS-based out-of-band SQL injection...");
+            if let Some(dns_vector) = check_dns_exfiltration(&request, domain).await? {
+                self.db_type = dns_vector.dbms;
+                tracing::warn!(
+                    "[SQLi OOB] DNS exfiltration confirmed (DBMS: {})",
+                    dns_vector.dbms
+                );
+                return Ok(true);
+            }
         }
 
         Ok(false)

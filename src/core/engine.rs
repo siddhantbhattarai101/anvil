@@ -157,6 +157,23 @@ impl Engine {
             None
         };
 
+        // Start the built-in OOB listeners (HTTP + DNS) once, up front, if any
+        // out-of-band callback domain is configured — shared by blind SQLi, SSRF
+        // and XSS. Idempotent; best-effort (DNS needs port 53 / privileges).
+        if self.ctx.ssrf_config.oob_callback.is_some() || self.ctx.xss_callback.is_some() {
+            match crate::ssrf::oob::start_oob_server("0.0.0.0:8888").await {
+                Ok(addr) => tracing::info!("OOB HTTP listener on {}", addr),
+                Err(e) => tracing::warn!("OOB HTTP listener unavailable: {}", e),
+            }
+            match crate::ssrf::oob::start_oob_dns_server("0.0.0.0:53").await {
+                Ok(addr) => tracing::info!("OOB DNS listener on {}", addr),
+                Err(e) => tracing::warn!(
+                    "OOB DNS listener unavailable on :53 ({}): DNS-based exfil disabled",
+                    e
+                ),
+            }
+        }
+
         // -------------------------------------------------
         // SQL INJECTION SCANNING
         // -------------------------------------------------
@@ -266,7 +283,8 @@ impl Engine {
             Vec::new(), // auth cookies/headers are carried by the HTTP client
             Vec::new(),
         );
-        let mut engine = crate::sqli::SqliEngine::with_injection_point(client, sqli_point);
+        let mut engine = crate::sqli::SqliEngine::with_injection_point(client, sqli_point)
+            .with_oob_callback(self.ctx.ssrf_config.oob_callback.clone());
 
         if !engine.detect(target_url, &param_name).await? {
             tracing::warn!("No SQL injection vulnerability detected");
@@ -548,7 +566,8 @@ impl Engine {
                     Vec::new(),
                 );
                 let mut engine =
-                    crate::sqli::SqliEngine::with_injection_point(client, sqli_point);
+                    crate::sqli::SqliEngine::with_injection_point(client, sqli_point)
+                        .with_oob_callback(self.ctx.ssrf_config.oob_callback.clone());
                 if engine.detect(&base_url, param).await? {
                     all_results.push(SqliResult {
                         endpoint: base_url.to_string(),
@@ -1994,20 +2013,7 @@ impl Engine {
     ) -> anyhow::Result<()> {
         // Removed verbose methodology - enterprise tools are concise
 
-        // Start the built-in OOB interaction listener if an OOB callback domain
-        // was configured (enables blind SSRF correlation). The callback domain
-        // supplied via --ssrf-callback must route to this host:port.
-        if let Some(ref domain) = self.ctx.ssrf_config.oob_callback {
-            const OOB_BIND: &str = "0.0.0.0:8888";
-            match crate::ssrf::oob::start_oob_server(OOB_BIND).await {
-                Ok(addr) => tracing::info!(
-                    "OOB interaction listener started on {} (ensure callback domain '{}' routes here)",
-                    addr,
-                    domain
-                ),
-                Err(e) => tracing::warn!("Failed to start OOB listener on {}: {}", OOB_BIND, e),
-            }
-        }
+        // (OOB listeners are started once, up front, in run().)
 
         // Check if we have a direct parameter first (takes priority)
         if let Some(ref param) = self.ctx.direct_param {

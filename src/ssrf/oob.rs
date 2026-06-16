@@ -95,6 +95,108 @@ async fn handle_oob_conn(mut stream: tokio::net::TcpStream, log: Arc<Mutex<Vec<S
         .await;
 }
 
+/// Address the built-in DNS listener bound to (set once, on first start).
+static OOB_DNS_ADDR: OnceLock<String> = OnceLock::new();
+
+/// Start the built-in OOB DNS listener on `bind_addr` (e.g. "0.0.0.0:53", which
+/// needs privileges; a high port can be used for testing). Records the queried
+/// name for every inbound DNS question into the shared interaction log, so
+/// DNS-based blind exfiltration (SQLi `LOAD_FILE`/`xp_dirtree`, SSRF DNS lookups)
+/// is correlated by id just like HTTP callbacks. Idempotent.
+pub async fn start_oob_dns_server(bind_addr: &str) -> std::io::Result<String> {
+    use tokio::net::UdpSocket;
+
+    if let Some(addr) = OOB_DNS_ADDR.get() {
+        return Ok(addr.clone());
+    }
+
+    let socket = UdpSocket::bind(bind_addr).await?;
+    let actual = socket.local_addr()?.to_string();
+    if OOB_DNS_ADDR.set(actual.clone()).is_err() {
+        return Ok(OOB_DNS_ADDR.get().cloned().unwrap_or(actual));
+    }
+
+    tokio::spawn(async move {
+        let mut buf = [0u8; 1500];
+        loop {
+            match socket.recv_from(&mut buf).await {
+                Ok((n, peer)) => {
+                    let packet = &buf[..n];
+                    if let Some((qname, q_end)) = parse_dns_question(packet) {
+                        record_oob_interaction(format!("DNS {} | from {}", qname, peer));
+                        tracing::info!("OOB DNS interaction: {} from {}", qname, peer);
+                        if let Some(resp) = build_dns_response(packet, q_end) {
+                            let _ = socket.send_to(&resp, peer).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("OOB DNS recv error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(actual)
+}
+
+/// Parse the QNAME of the first question in a DNS query packet. Returns the
+/// dotted name and the byte offset just past the question (QNAME+QTYPE+QCLASS).
+fn parse_dns_question(packet: &[u8]) -> Option<(String, usize)> {
+    if packet.len() < 12 {
+        return None;
+    }
+    let mut pos = 12; // skip the 12-byte header
+    let mut labels = Vec::new();
+    loop {
+        let len = *packet.get(pos)? as usize;
+        if len == 0 {
+            pos += 1;
+            break;
+        }
+        // Compression pointers are not expected in a question's QNAME.
+        if len & 0xC0 != 0 {
+            return None;
+        }
+        pos += 1;
+        let end = pos.checked_add(len)?;
+        if end > packet.len() {
+            return None;
+        }
+        labels.push(String::from_utf8_lossy(&packet[pos..end]).to_string());
+        pos = end;
+    }
+    if labels.is_empty() {
+        return None;
+    }
+    let q_end = pos + 4; // QTYPE(2) + QCLASS(2)
+    Some((labels.join("."), q_end.min(packet.len())))
+}
+
+/// Build a minimal DNS response (A record -> 127.0.0.1) so the resolver is
+/// satisfied and does not hammer us with retries. Best-effort.
+fn build_dns_response(query: &[u8], q_end: usize) -> Option<Vec<u8>> {
+    if query.len() < 12 || q_end < 12 || q_end > query.len() {
+        return None;
+    }
+    let mut resp = Vec::with_capacity(q_end + 16);
+    resp.extend_from_slice(&query[0..2]); // copy transaction ID
+    resp.extend_from_slice(&[0x81, 0x80]); // flags: response, recursion available
+    resp.extend_from_slice(&[0x00, 0x01]); // QDCOUNT = 1
+    resp.extend_from_slice(&[0x00, 0x01]); // ANCOUNT = 1
+    resp.extend_from_slice(&[0x00, 0x00]); // NSCOUNT = 0
+    resp.extend_from_slice(&[0x00, 0x00]); // ARCOUNT = 0
+    resp.extend_from_slice(&query[12..q_end]); // echo the question
+    resp.extend_from_slice(&[0xC0, 0x0C]); // answer name -> pointer to offset 12
+    resp.extend_from_slice(&[0x00, 0x01]); // TYPE A
+    resp.extend_from_slice(&[0x00, 0x01]); // CLASS IN
+    resp.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL 60
+    resp.extend_from_slice(&[0x00, 0x04]); // RDLENGTH 4
+    resp.extend_from_slice(&[127, 0, 0, 1]); // RDATA 127.0.0.1
+    Some(resp)
+}
+
 /// OOB callback generator
 #[derive(Debug, Clone)]
 pub struct OobCallbackGenerator {
@@ -274,6 +376,51 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert!(oob_was_hit(id), "OOB listener did not record the interaction");
+    }
+
+    #[test]
+    fn test_parse_dns_question() {
+        // Query for "abc123.oast.test" A IN
+        let mut pkt = vec![0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        for label in ["abc123", "oast", "test"] {
+            pkt.push(label.len() as u8);
+            pkt.extend_from_slice(label.as_bytes());
+        }
+        pkt.push(0); // end of name
+        pkt.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE A, QCLASS IN
+        let (qname, q_end) = parse_dns_question(&pkt).expect("parse");
+        assert_eq!(qname, "abc123.oast.test");
+        assert_eq!(q_end, pkt.len());
+        assert!(build_dns_response(&pkt, q_end).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_oob_dns_server_records_query() {
+        use tokio::net::UdpSocket;
+
+        let addr = start_oob_dns_server("127.0.0.1:0").await.expect("bind dns");
+        let id = "ssrf-dnslive-7c6b5a";
+        assert!(!oob_was_hit(id));
+
+        // Craft a DNS query for "<id>.oast.test".
+        let mut pkt = vec![0x43, 0x21, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        for label in [id, "oast", "test"] {
+            pkt.push(label.len() as u8);
+            pkt.extend_from_slice(label.as_bytes());
+        }
+        pkt.push(0);
+        pkt.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        sock.send_to(&pkt, &addr).await.unwrap();
+
+        for _ in 0..40 {
+            if oob_was_hit(id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(oob_was_hit(id), "DNS listener did not record the query");
     }
 }
 
