@@ -2,6 +2,7 @@ mod cli;
 mod cmdi;
 mod core;
 mod http;
+mod pathtrav;
 mod payload;
 mod reporting;
 mod scanner;

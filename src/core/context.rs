@@ -112,6 +112,7 @@ impl Context {
                 || cli.ssrf
                 || cli.ssrf_all
                 || cli.cmdi
+                || cli.path_traversal
                 || has_enumeration;
 
             // Enable fingerprint and crawl by default if no specific module requested
@@ -188,6 +189,9 @@ impl Context {
             }
             if cli.cmdi {
                 profile.enable(Capability::Cmdi);
+            }
+            if cli.path_traversal {
+                profile.enable(Capability::PathTraversal);
             }
 
             profile

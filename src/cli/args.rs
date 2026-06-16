@@ -52,6 +52,10 @@ pub struct Cli {
     #[arg(long, help_heading = "CORE FEATURES")]
     pub cmdi: bool,
 
+    /// Enable path traversal / LFI scanning (CWE-22)
+    #[arg(long = "path-traversal", visible_alias = "lfi", help_heading = "CORE FEATURES")]
+    pub path_traversal: bool,
+
     // ═══════════════════════════════════════════════════════════════════
     // XSS DETECTION OPTIONS
     // ═══════════════════════════════════════════════════════════════════

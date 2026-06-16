@@ -5,24 +5,51 @@ Corpus: local labeled vulnapp (SQLi/XSS/SSRF, vulnerable + safe).
 
 ## Per-tool summary
 
-| Tool | Scope (n) | TP | FP | FN | TN | Precision | Recall | F1 | Total time |
-|------|-----------|----|----|----|----|-----------|--------|----|-----------|
-| dalfox | 12 | 8 | 1 | 1 | 2 | 0.89 | 0.89 | 0.89 | 138.0s |
-| anvil | 12 | 9 | 0 | 0 | 3 | 1.00 | 1.00 | 1.00 | 50.9s |
+| Tool | Scope (n) | TP | FP | FN | TN | Precision | Recall (TPR) | FPR | F1 | OWASP Score (TPR-FPR) | Total time |
+|------|-----------|----|----|----|----|-----------|--------------|-----|----|----------------------|-----------|
+| anvil | 40 | 20 | 0 | 0 | 20 | 1.00 | 1.00 | 0.00 | 1.00 | **1.00** | 323.8s |
 
 ## Per-target detail
 
-| Target | Type | Expected | anvil | dalfox |
-|--------|------|----------|----|----|
-| xss-body-html | xss | vulnerable | FOUND (1.24s) | FOUND (12.8s) |
-| xss-attr-dq | xss | vulnerable | FOUND (1.6s) | FOUND (13.02s) |
-| xss-attr-sq | xss | vulnerable | FOUND (2.22s) | FOUND (13.99s) |
-| xss-js-string | xss | vulnerable | FOUND (5.73s) | FOUND (7.03s) |
-| xss-comment | xss | vulnerable | FOUND (6.53s) | FOUND (12.18s) |
-| xss-href-url | xss | vulnerable | FOUND (1.59s) | FOUND (14.79s) |
-| xss-filtered-attr | xss | vulnerable | FOUND (5.42s) | FOUND (12.17s) |
-| xss-post-body | xss | vulnerable | FOUND (1.5s) | miss (2.77s) |
-| xss-dom-innerhtml | xss | vulnerable | FOUND (2.3s) | FOUND (12.8s) |
-| xss-safe-escaped | xss | safe | miss (7.45s) | miss (13.95s) |
-| xss-safe-attr | xss | safe | miss (7.64s) | miss (10.38s) |
-| xss-safe-csp | xss | safe | miss (7.7s) | FOUND (12.17s) |
+| Target | Type | Expected | anvil |
+|--------|------|----------|----|
+| pt-000 | pathtrav | vulnerable | FOUND (0.26s) |
+| pt-001 | pathtrav | safe | miss (15.96s) |
+| pt-002 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-003 | pathtrav | safe | miss (15.95s) |
+| pt-004 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-005 | pathtrav | safe | miss (15.95s) |
+| pt-006 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-007 | pathtrav | safe | miss (15.97s) |
+| pt-008 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-009 | pathtrav | safe | miss (15.94s) |
+| pt-010 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-011 | pathtrav | safe | miss (15.95s) |
+| pt-012 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-013 | pathtrav | safe | miss (15.95s) |
+| pt-014 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-015 | pathtrav | safe | miss (15.95s) |
+| pt-016 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-017 | pathtrav | safe | miss (15.96s) |
+| pt-018 | pathtrav | vulnerable | FOUND (0.23s) |
+| pt-019 | pathtrav | safe | miss (15.95s) |
+| pt-020 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-021 | pathtrav | safe | miss (15.94s) |
+| pt-022 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-023 | pathtrav | safe | miss (15.96s) |
+| pt-024 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-025 | pathtrav | safe | miss (15.96s) |
+| pt-026 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-027 | pathtrav | safe | miss (15.95s) |
+| pt-028 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-029 | pathtrav | safe | miss (15.95s) |
+| pt-030 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-031 | pathtrav | safe | miss (15.96s) |
+| pt-032 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-033 | pathtrav | safe | miss (15.95s) |
+| pt-034 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-035 | pathtrav | safe | miss (15.94s) |
+| pt-036 | pathtrav | vulnerable | FOUND (0.23s) |
+| pt-037 | pathtrav | safe | miss (15.95s) |
+| pt-038 | pathtrav | vulnerable | FOUND (0.24s) |
+| pt-039 | pathtrav | safe | miss (15.95s) |

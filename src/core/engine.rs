@@ -253,6 +253,14 @@ impl Engine {
         }
 
         // -------------------------------------------------
+        // PATH TRAVERSAL / LFI (CWE-22)
+        // -------------------------------------------------
+        if self.ctx.profile.has(Capability::PathTraversal) {
+            tracing::info!("Running path traversal / LFI scan...");
+            self.run_pathtrav_scan(&client, &target_url, &sitemap, &mut reporter).await?;
+        }
+
+        // -------------------------------------------------
         // GENERATE REPORT
         // -------------------------------------------------
         tracing::info!("ANVIL scan completed successfully");
@@ -2223,6 +2231,133 @@ impl Engine {
             references: vec![
                 "https://owasp.org/www-community/attacks/Command_Injection".to_string(),
                 "https://cwe.mitre.org/data/definitions/78.html".to_string(),
+            ],
+            payload_sample: Some(v.payload.clone()),
+        });
+    }
+
+    /// (url, param) pairs to test, preserving sibling query params.
+    fn injection_targets(&self, target_url: &Url, sitemap: &Option<SiteMap>) -> Vec<(Url, String)> {
+        let mut targets: Vec<(Url, String)> = Vec::new();
+        if let Some(p) = &self.ctx.direct_param {
+            targets.push((target_url.clone(), p.clone()));
+        } else if let Some(sm) = sitemap {
+            for (path, ep) in &sm.endpoints {
+                if ep.parameters.is_empty() {
+                    continue;
+                }
+                let base = match target_url.join(path) {
+                    Ok(u) => u,
+                    Err(_) => continue,
+                };
+                for param in &ep.parameters {
+                    let mut pairs: Vec<(String, String)> = Vec::new();
+                    let mut seen = std::collections::HashSet::new();
+                    for (k, v) in target_url.query_pairs() {
+                        if seen.insert(k.to_string()) {
+                            pairs.push((k.to_string(), v.to_string()));
+                        }
+                    }
+                    for pp in &ep.parameters {
+                        if seen.insert(pp.clone()) {
+                            pairs.push((pp.clone(), "1".to_string()));
+                        }
+                    }
+                    let mut seeded = base.clone();
+                    {
+                        let mut qp = seeded.query_pairs_mut();
+                        qp.clear();
+                        for (k, v) in &pairs {
+                            qp.append_pair(k, v);
+                        }
+                    }
+                    targets.push((seeded, param.clone()));
+                }
+            }
+        } else {
+            for (k, _) in target_url.query_pairs() {
+                targets.push((target_url.clone(), k.to_string()));
+            }
+        }
+        targets
+    }
+
+    /// Run path traversal / LFI detection over the testable parameters.
+    async fn run_pathtrav_scan(
+        &self,
+        client: &HttpClient,
+        target_url: &Url,
+        sitemap: &Option<SiteMap>,
+        reporter: &mut crate::reporting::reporter::Reporter,
+    ) -> anyhow::Result<()> {
+        let method = reqwest::Method::from_bytes(self.ctx.http_method.as_bytes())
+            .unwrap_or(reqwest::Method::GET);
+        for (url, param) in self.injection_targets(target_url, sitemap) {
+            let point = crate::sqli::request::InjectionPoint::from_context(
+                method.clone(),
+                url.clone(),
+                &param,
+                self.ctx.post_data.clone(),
+                Vec::new(),
+                Vec::new(),
+            );
+            let request = crate::sqli::request::Request::with_point(client, point);
+            match crate::pathtrav::check_path_traversal(&request).await {
+                Ok(Some(v)) => {
+                    tracing::warn!(
+                        "[PATH TRAVERSAL] {} param={} read '{}' via: {}",
+                        url,
+                        param,
+                        v.file,
+                        v.payload
+                    );
+                    self.add_pathtrav_finding(&url, &param, &v, reporter);
+                }
+                Ok(None) => {}
+                Err(e) => tracing::debug!("path-traversal error on '{}': {}", param, e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Add a confirmed path-traversal finding.
+    fn add_pathtrav_finding(
+        &self,
+        url: &Url,
+        param: &str,
+        v: &crate::pathtrav::PathTravVector,
+        reporter: &mut crate::reporting::reporter::Reporter,
+    ) {
+        use crate::reporting::model::{Finding, Severity};
+        reporter.add(Finding {
+            vuln_type: "Path Traversal / LFI".to_string(),
+            technique: "Path traversal (file-content confirmed)".to_string(),
+            endpoint: url.path().to_string(),
+            parameter: Some(param.to_string()),
+            confidence: 0.97,
+            severity: Severity::High,
+            evidence: format!(
+                "Read '{}' via traversal — its content signature appeared in the response.\n\
+                 Parameter: {}\nPayload: {}",
+                v.file, param, v.payload
+            ),
+            http_method: self.ctx.http_method.clone(),
+            database: None,
+            cwe: "CWE-22".to_string(),
+            cvss_score: Some(7.5),
+            description:
+                "Path traversal: attacker-controlled input reaches a filesystem path, allowing \
+                 arbitrary file read."
+                    .to_string(),
+            impact: "Disclosure of arbitrary files (credentials, config, source) on the server."
+                .to_string(),
+            remediation:
+                "Resolve the path and confirm it stays within an allowed base directory; reject \
+                 traversal sequences; prefer an allow-list of filenames."
+                    .to_string(),
+            references: vec![
+                "https://owasp.org/www-community/attacks/Path_Traversal".to_string(),
+                "https://cwe.mitre.org/data/definitions/22.html".to_string(),
             ],
             payload_sample: Some(v.payload.clone()),
         });

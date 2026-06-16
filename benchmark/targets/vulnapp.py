@@ -44,6 +44,10 @@ DB_PATH = os.path.join(tempfile.gettempdir(), "anvil_bench.sqlite")
 # In-memory store for the stored-XSS endpoint.
 STORE = []
 
+# Root dir for the path-traversal bench endpoint (traversal from here reaches
+# system files like /etc/passwd).
+LFI_ROOT = tempfile.mkdtemp(prefix="anvil_lfi_")
+
 # MySQL-style error so MySQL-targeting error-based detection is exercised.
 MYSQL_ERR = (
     "You have an error in your SQL syntax; check the manual that corresponds to "
@@ -162,6 +166,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send("<p>Not found</p>")
             finally:
                 conn.close()
+
+        if path.startswith("/bench/pathtrav/"):
+            case = _bench_case("/bench/pathtrav/")
+            qv = p("q", "x")
+            real = (case % 2 == 0)
+            try:
+                # vulnerable: raw join (traversal works); safe: basename strips it
+                name = qv if real else os.path.basename(qv)
+                data = open(os.path.join(LFI_ROOT, name)).read()
+            except Exception as e:
+                data = f"error {e}"
+            return self._send(data, ctype="text/plain")
 
         if path.startswith("/bench/cmdi/"):
             case = _bench_case("/bench/cmdi/")

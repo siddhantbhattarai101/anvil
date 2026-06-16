@@ -29,6 +29,9 @@ pub enum Capability {
 
     // Command injection
     Cmdi,            // OS command injection (CWE-78)
+
+    // Path traversal / LFI
+    PathTraversal,   // Path traversal / Local File Inclusion (CWE-22)
 }
 
 impl Capability {
