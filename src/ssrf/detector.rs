@@ -63,37 +63,36 @@ impl SsrfDetector {
             tracing::debug!("Outbound request behavior confirmed for '{}'", param_name);
         }
 
-        // Phase 2: Generate and test probes
-        let mut probes = self.probe_generator.generate_all_probes(original_value);
-
-        // Sort by priority
-        probes.sort_by_key(|p| p.priority());
-
-        // Limit number of probes
-        if probes.len() > self.config.max_payloads {
-            probes.truncate(self.config.max_payloads);
-        }
-
         let mut best_result: Option<SsrfResult> = None;
 
-        for probe in &probes {
-            if let Some(result) = self.test_probe(client, url, param_name, probe).await? {
-                // Update best result if this is better
-                if let Some(ref current_best) = best_result {
-                    if result.classification > current_best.classification
-                        || (result.classification == current_best.classification
-                            && result.confidence > current_best.confidence)
-                    {
+        // Phase 2: response-based probes — only meaningful when the parameter
+        // actually drives a fetch. Skipping these when not reachable is what
+        // keeps reflection-only endpoints (which echo probes back) from being
+        // flagged; for those, OOB (Phase 3) is the only valid signal.
+        if reachable {
+            let mut probes = self.probe_generator.generate_all_probes(original_value);
+            probes.sort_by_key(|p| p.priority());
+            if probes.len() > self.config.max_payloads {
+                probes.truncate(self.config.max_payloads);
+            }
+
+            for probe in &probes {
+                if let Some(result) = self.test_probe(client, url, param_name, probe).await? {
+                    if let Some(ref current_best) = best_result {
+                        if result.classification > current_best.classification
+                            || (result.classification == current_best.classification
+                                && result.confidence > current_best.confidence)
+                        {
+                            best_result = Some(result);
+                        }
+                    } else {
                         best_result = Some(result);
                     }
-                } else {
-                    best_result = Some(result);
-                }
 
-                // If we found confirmed SSRF, we can stop
-                if let Some(ref result) = best_result {
-                    if result.classification == SsrfClassification::ConfirmedNetworkSsrf {
-                        break;
+                    if let Some(ref result) = best_result {
+                        if result.classification == SsrfClassification::ConfirmedNetworkSsrf {
+                            break;
+                        }
                     }
                 }
             }
