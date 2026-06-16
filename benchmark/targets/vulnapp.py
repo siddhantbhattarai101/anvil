@@ -40,6 +40,9 @@ from urllib.parse import urlparse, parse_qs
 
 DB_PATH = os.path.join(tempfile.gettempdir(), "anvil_bench.sqlite")
 
+# In-memory store for the stored-XSS endpoint.
+STORE = []
+
 # MySQL-style error so MySQL-targeting error-based detection is exercised.
 MYSQL_ERR = (
     "You have an error in your SQL syntax; check the manual that corresponds to "
@@ -92,11 +95,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, body, status=200, ctype="text/html"):
+    def _send(self, body, status=200, ctype="text/html", extra_headers=None):
         data = body.encode("utf-8", "replace")
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
@@ -165,17 +170,50 @@ class Handler(BaseHTTPRequestHandler):
             names = ", ".join(r[0] for r in rows) if rows else "none"
             return self._send(f"<h1>User</h1><p>name: {names}</p>")
 
-        # ---------------- XSS ----------------
-        if path == "/xss/body":
+        # ---------------- XSS (vulnerable) ----------------
+        if path == "/xss/body":  # HTML body context
             return self._send(f"<html><body><h1>Search</h1><div>{p('q')}</div></body></html>")
-        if path == "/xss/attr":
+        if path == "/xss/attr":  # double-quote attribute
             return self._send(f'<html><body><input type="text" value="{p("q")}"></body></html>')
-        if path == "/xss/js":
+        if path == "/xss/attr_sq":  # single-quote attribute
+            return self._send(f"<html><body><input type='text' value='{p('q')}'></body></html>")
+        if path == "/xss/js":  # JS string context
+            return self._send(f'<html><body><script>var term="{p("q")}";</script></body></html>')
+        if path == "/xss/comment":  # inside an HTML comment
+            return self._send(f"<html><body><!-- {p('q')} --></body></html>")
+        if path == "/xss/href":  # URL/href context (javascript: scheme)
+            return self._send(f'<html><body><a href="{p("q")}">link</a></body></html>')
+        if path == "/xss/filtered":  # strips < and > -> needs attribute event-handler breakout
+            v = p("q").replace("<", "").replace(">", "")
+            return self._send(f'<html><body><input value="{v}"></body></html>')
+        if path == "/xss/post" and post:  # reflected via POST body
+            return self._send(f"<html><body><div>{p('q')}</div></body></html>")
+        if path == "/xss/dom":  # DOM XSS: client JS reads ?q= and sinks to innerHTML
             return self._send(
-                f'<html><body><script>var term="{p("q")}";</script></body></html>'
+                "<html><body><div id=out></div><script>"
+                "var u=new URLSearchParams(location.search);"
+                "document.getElementById('out').innerHTML=u.get('q');"
+                "</script></body></html>"
             )
-        if path == "/xss/safe":
+        if path == "/xss/stored":  # stored: GET shows store; (POST stores then redirects)
+            if post:
+                STORE.append(p("q"))
+                return self._send("<html><body>saved</body></html>")
+            items = "".join(f"<li>{x}</li>" for x in STORE[-10:])
+            return self._send(f"<html><body><h1>Comments</h1><ul>{items}</ul></body></html>")
+
+        # ---------------- XSS (safe) ----------------
+        if path == "/xss/safe":  # html.escape body
             return self._send(f"<html><body><div>{html.escape(p('q'))}</div></body></html>")
+        if path == "/xss/attr_safe":  # properly escaped attribute
+            return self._send(
+                f'<html><body><input value="{html.escape(p("q"), quote=True)}"></body></html>'
+            )
+        if path == "/xss/csp":  # reflected UNescaped but CSP blocks inline execution
+            return self._send(
+                f"<html><body><div>{p('q')}</div></body></html>",
+                extra_headers={"Content-Security-Policy": "script-src 'none'; object-src 'none'"},
+            )
 
         # ---------------- SSRF ----------------
         if path == "/ssrf/fetch":
