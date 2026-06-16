@@ -292,7 +292,11 @@ impl Engine {
             return Ok(());
         }
 
-        tracing::info!("[+] SQL injection confirmed: UNION-based");
+        let tech = engine
+            .technique
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "detected".to_string());
+        tracing::info!("[+] SQL injection confirmed: {}", tech);
         tracing::info!("[+] Backend DBMS: {}", engine.db_type);
         
         if let Some(ref v) = engine.vector {
@@ -569,13 +573,14 @@ impl Engine {
                     crate::sqli::SqliEngine::with_injection_point(client, sqli_point)
                         .with_oob_callback(self.ctx.ssrf_config.oob_callback.clone());
                 if engine.detect(&base_url, param).await? {
+                    let technique = engine.technique.unwrap_or(SqliTechnique::Union);
                     all_results.push(SqliResult {
                         endpoint: base_url.to_string(),
                         parameter: param.clone(),
-                        technique: SqliTechnique::Union,
+                        technique,
                         confidence: 0.9,
                         db_type: Some(engine.db_type),
-                        details: format!("UNION-based SQLi detected"),
+                        details: format!("{} SQLi detected", technique),
                     });
                 }
             }

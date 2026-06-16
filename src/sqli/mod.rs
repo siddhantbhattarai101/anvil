@@ -98,6 +98,9 @@ pub struct SqliEngine<'a> {
     oob_callback: Option<String>,
     pub vector: Option<UnionVector>,
     pub db_type: DBMS,
+    /// Which technique confirmed the most recent detection (for accurate
+    /// reporting). `None` until `detect` succeeds.
+    pub technique: Option<SqliTechnique>,
 }
 
 impl<'a> SqliEngine<'a> {
@@ -110,6 +113,7 @@ impl<'a> SqliEngine<'a> {
             oob_callback: None,
             vector: None,
             db_type: DBMS::Unknown,
+            technique: None,
         }
     }
 
@@ -124,6 +128,7 @@ impl<'a> SqliEngine<'a> {
             oob_callback: None,
             vector: None,
             db_type: DBMS::Unknown,
+            technique: None,
         }
     }
 
@@ -149,28 +154,39 @@ impl<'a> SqliEngine<'a> {
         
         let request = self.make_request(url, param);
 
-        // Try UNION-based first (most powerful)
+        // Try UNION-based first (the only technique that also enables full data
+        // extraction, so it is preferred when present).
         tracing::info!("Testing UNION-based SQL injection...");
         if let Some(union_vector) = check_union(&request).await? {
             self.db_type = union_vector.dbms;
             self.vector = Some(union_vector);
+            self.technique = Some(SqliTechnique::Union);
             return Ok(true);
         }
 
-        // Try error-based
+        // Error-based. No column info for extraction, but it is a confirmed
+        // injection and must be reported.
         tracing::info!("Testing error-based SQL injection...");
         if let Some(error_vector) = check_error_based(&request).await? {
             self.db_type = error_vector.dbms;
-            // Convert to union-like vector for compatibility
-            // Error-based doesn't have column info, so we can't use it for data extraction
-            return Ok(false); // For now, only support UNION
+            self.technique = Some(SqliTechnique::Error);
+            return Ok(true);
         }
 
-        // Try boolean-based blind
+        // Boolean-based blind.
         tracing::info!("Testing boolean-based blind SQL injection...");
-        if let Some(_blind_vector) = check_boolean_blind(&request).await? {
-            // Blind is too slow for full enumeration
-            return Ok(false);
+        if let Some(blind_vector) = check_boolean_blind(&request).await? {
+            self.db_type = blind_vector.dbms;
+            self.technique = Some(SqliTechnique::Boolean);
+            return Ok(true);
+        }
+
+        // Time-based blind.
+        tracing::info!("Testing time-based blind SQL injection...");
+        if let Some(time_vector) = check_time_blind(&request).await? {
+            self.db_type = time_vector.dbms;
+            self.technique = Some(SqliTechnique::Time);
+            return Ok(true);
         }
 
         // Out-of-band DNS exfiltration (last resort; needs the OOB DNS listener
@@ -179,6 +195,7 @@ impl<'a> SqliEngine<'a> {
             tracing::info!("Testing DNS-based out-of-band SQL injection...");
             if let Some(dns_vector) = check_dns_exfiltration(&request, domain).await? {
                 self.db_type = dns_vector.dbms;
+                self.technique = Some(SqliTechnique::Stacked);
                 tracing::warn!(
                     "[SQLi OOB] DNS exfiltration confirmed (DBMS: {})",
                     dns_vector.dbms
