@@ -561,17 +561,36 @@ impl Engine {
             };
 
             for param in &ep.parameters {
-                // `base_url` is `target_url.join(path)`, which drops the query —
-                // so re-seed this parameter's original value from the target URL
-                // (falling back to "1") so detection can build boundaries from
-                // the real value (needed for string-context SQLi).
-                let orig_val = target_url
-                    .query_pairs()
-                    .find(|(k, _)| k.as_ref() == param.as_str())
-                    .map(|(_, v)| v.to_string())
-                    .unwrap_or_else(|| "1".to_string());
+                // `base_url` is `target_url.join(path)`, which drops the query
+                // string. Rebuild it preserving ALL of the target URL's query
+                // parameters — the *siblings* the endpoint may need to reach the
+                // vulnerable code path — plus every parameter discovered for this
+                // endpoint (defaulting missing values to "1"). The injected
+                // parameter keeps its original value so boundaries seed from it.
+                let mut pairs: Vec<(String, String)> = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for (k, v) in target_url.query_pairs() {
+                    if seen.insert(k.to_string()) {
+                        pairs.push((k.to_string(), v.to_string()));
+                    }
+                }
+                for p in &ep.parameters {
+                    if seen.insert(p.clone()) {
+                        pairs.push((p.clone(), "1".to_string()));
+                    }
+                }
+                if seen.insert(param.clone()) {
+                    pairs.push((param.clone(), "1".to_string()));
+                }
+
                 let mut seeded_url = base_url.clone();
-                seeded_url.query_pairs_mut().append_pair(param, &orig_val);
+                {
+                    let mut qp = seeded_url.query_pairs_mut();
+                    qp.clear();
+                    for (k, v) in &pairs {
+                        qp.append_pair(k, v);
+                    }
+                }
 
                 let sqli_point = crate::sqli::request::InjectionPoint::from_context(
                     reqwest::Method::from_bytes(self.ctx.http_method.as_bytes())
