@@ -34,21 +34,28 @@ measures false positives, not just detection.
 
 | Tool | Scope (n) | Precision | Recall | F1 | Total time |
 |------|-----------|-----------|--------|----|-----------|
-| anvil  | 12 (all) | **1.00** | 0.67 | 0.80 | 96.5s |
-| sqlmap | 6 (sqli) | 1.00 | 0.80 | 0.89 | 42.2s |
-| dalfox | 4 (xss)  | 1.00 | 1.00 | 1.00 | 44.8s |
+| anvil  | 12 (all) | **1.00** | **0.89** | **0.94** | 125.5s |
+| sqlmap | 6 (sqli) | 1.00 | 0.80 | 0.89 | 42.5s |
+| dalfox | 4 (xss)  | 1.00 | 1.00 | 1.00 | 48.0s |
 
 Read-out:
 - **Zero false positives (precision 1.00)** — every safe endpoint was correctly
   left alone. ANVIL's evidence-driven / headless-execution-proof design holds up.
-- **XSS: 3/3, and faster than dalfox** (~1–4s vs ~10–13s) thanks to headless
+- **SQLi: 4/5, matching sqlmap** (they miss different cases). ANVIL catches
+  error/UNION, boolean-blind, time-based, and POST-body; it misses the
+  single-quote *string-context* case (its boolean boundaries don't yet seed from
+  the original parameter value). sqlmap misses the synthetic time-based case.
+- **XSS: 3/3, faster than dalfox** (~1–4s vs ~12s) thanks to headless
   verification rather than fuzzing.
 - **SSRF: 1/1, no FP.**
-- **SQLi recall is the weak spot (2/5).** The misses (boolean-blind, string
-  context, time-based) are a *surfacing* gap, not a detection gap: the
-  `check_boolean_blind` / `check_time_blind` functions exist and work, but
-  `SqliEngine::detect()` only returns `true` for UNION-based. Wiring the other
-  techniques into `detect()` is the highest-value next fix.
+
+### Before → after (the harness driving a fix)
+
+The first run scored ANVIL **recall 0.67 / F1 0.80** — SQLi was only 2/5 because
+`SqliEngine::detect()` returned `true` only for UNION-based and discarded the
+working boolean/error/time checks. Surfacing those techniques moved SQLi to 4/5
+and overall **F1 0.80 → 0.94** — the harness turning a vague "is it powerful?"
+into a measured gap, a fix, and a verified improvement.
 
 ## Caveats / fairness notes
 
