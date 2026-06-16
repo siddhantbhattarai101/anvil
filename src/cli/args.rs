@@ -380,15 +380,15 @@ pub struct Cli {
     // ═══════════════════════════════════════════════════════════════════
 
     /// Enable proof mode (safe metadata extraction only)
-    #[arg(long, help_heading = "LEGACY")]
+    #[arg(long, hide = true, help_heading = "LEGACY")]
     pub proof: bool,
 
     /// Enable exploitation (same as enumeration flags)
-    #[arg(long, help_heading = "LEGACY")]
+    #[arg(long, hide = true, help_heading = "LEGACY")]
     pub exploit: bool,
 
     /// Extract database password hashes (same as --passwords)
-    #[arg(long = "dump-hashes", help_heading = "LEGACY")]
+    #[arg(long = "dump-hashes", hide = true, help_heading = "LEGACY")]
     pub dump_hashes: bool,
 }
 
