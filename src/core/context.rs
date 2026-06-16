@@ -79,6 +79,8 @@ pub struct Context {
     // Injection customization
     pub prefix: Option<String>,
     pub suffix: Option<String>,
+    /// Callback domain for blind XSS (must route to the OOB listener).
+    pub xss_callback: Option<String>,
 }
 
 impl Context {
@@ -275,6 +277,7 @@ impl Context {
             threads: cli.threads,
             prefix: cli.prefix,
             suffix: cli.suffix,
+            xss_callback: cli.xss_callback,
         })
     }
 }

@@ -208,6 +208,12 @@ impl Engine {
             self.run_dom_xss_scan(&client, &target_url, &mut reporter).await?;
         }
 
+        // Blind XSS Detection (out-of-band)
+        if self.ctx.profile.has(Capability::BlindXss) {
+            tracing::info!("Running Blind XSS scan...");
+            self.run_blind_xss_scan(&client, &target_url, &mut reporter).await?;
+        }
+
         // -------------------------------------------------
         // SSRF SCANNING (Evidence-Driven Detection)
         // -------------------------------------------------
@@ -1573,7 +1579,61 @@ impl Engine {
         
         // Run stored XSS detection
         stored_engine.run(client, target_url, &param, reporter).await?;
-        
+
+        Ok(())
+    }
+
+    /// Run blind XSS detection: inject OOB payloads carrying unique correlation
+    /// IDs, then confirm any that reached the built-in interaction listener.
+    async fn run_blind_xss_scan(
+        &self,
+        client: &HttpClient,
+        target_url: &Url,
+        reporter: &mut crate::reporting::reporter::Reporter,
+    ) -> anyhow::Result<()> {
+        let callback_domain = match &self.ctx.xss_callback {
+            Some(d) => d.clone(),
+            None => {
+                tracing::warn!(
+                    "Blind XSS requested but no --callback domain provided; skipping"
+                );
+                return Ok(());
+            }
+        };
+
+        // Ensure the OOB interaction listener is running (idempotent — shared
+        // with blind SSRF). The callback domain must route to this host:port.
+        const OOB_BIND: &str = "0.0.0.0:8888";
+        match crate::ssrf::oob::start_oob_server(OOB_BIND).await {
+            Ok(addr) => tracing::info!(
+                "OOB listener on {} for blind XSS (callback domain '{}' must route here)",
+                addr,
+                callback_domain
+            ),
+            Err(e) => tracing::warn!("Failed to start OOB listener: {}", e),
+        }
+
+        let mut engine = crate::xss::blind::BlindXssEngine::new(callback_domain);
+
+        // Inject blind payloads into the chosen parameter.
+        let param = self.ctx.direct_param.clone().unwrap_or_else(|| "q".to_string());
+        if let Err(e) = engine.inject(client, target_url, &param).await {
+            tracing::warn!("Blind XSS injection failed for '{}': {}", param, e);
+        }
+
+        // Brief window for immediate callbacks, then correlate. Blind XSS often
+        // fires much later (when a victim renders the payload); the listener
+        // keeps running while anvil runs, but we report anything seen now.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let confirmed = engine.check_received_callbacks(reporter);
+        if confirmed > 0 {
+            tracing::warn!("[BLIND XSS] {} callback(s) confirmed during scan", confirmed);
+        } else {
+            tracing::info!(
+                "Blind XSS payloads injected; no callbacks yet (they may fire later)"
+            );
+        }
+
         Ok(())
     }
     

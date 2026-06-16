@@ -11,6 +11,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// blind-vuln check (SSRF, XSS, SQLi DNS/HTTP) so they can correlate by id.
 static OOB_LOG: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
 
+/// Address the built-in listener bound to (set once, on first start).
+static OOB_BOUND_ADDR: OnceLock<String> = OnceLock::new();
+
 fn oob_log() -> &'static Arc<Mutex<Vec<String>>> {
     OOB_LOG.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
 }
@@ -37,8 +40,18 @@ pub fn record_oob_interaction(line: impl Into<String>) {
 pub async fn start_oob_server(bind_addr: &str) -> std::io::Result<String> {
     use tokio::net::TcpListener;
 
+    // Idempotent: a single listener serves all blind-vuln checks (SSRF, XSS,
+    // SQLi), so repeated calls return the already-bound address.
+    if let Some(addr) = OOB_BOUND_ADDR.get() {
+        return Ok(addr.clone());
+    }
+
     let listener = TcpListener::bind(bind_addr).await?;
     let actual = listener.local_addr()?.to_string();
+    if OOB_BOUND_ADDR.set(actual.clone()).is_err() {
+        // Another caller won the race; defer to its address.
+        return Ok(OOB_BOUND_ADDR.get().cloned().unwrap_or(actual));
+    }
     let log = oob_log().clone();
 
     tokio::spawn(async move {
