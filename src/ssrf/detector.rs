@@ -50,13 +50,18 @@ impl SsrfDetector {
     ) -> anyhow::Result<Option<SsrfResult>> {
         tracing::debug!("Testing parameter '{}' for SSRF", param_name);
 
-        // Phase 1: Reachability testing - confirm server makes outbound requests
-        if !self.test_reachability(client, url, param_name).await? {
+        // Phase 1: Reachability testing - confirm server makes outbound requests.
+        // If OOB is configured we still proceed even when response-based
+        // reachability fails, because blind SSRF (no response evidence) can only
+        // be confirmed out-of-band in Phase 3.
+        let reachable = self.test_reachability(client, url, param_name).await?;
+        if !reachable && self.oob_generator.is_none() {
             tracing::debug!("No outbound request behavior detected for '{}'", param_name);
             return Ok(None);
         }
-
-        tracing::debug!("Outbound request behavior confirmed for '{}'", param_name);
+        if reachable {
+            tracing::debug!("Outbound request behavior confirmed for '{}'", param_name);
+        }
 
         // Phase 2: Generate and test probes
         let mut probes = self.probe_generator.generate_all_probes(original_value);
@@ -502,11 +507,16 @@ impl SsrfDetector {
         tracing::debug!("Testing blind SSRF with OOB callbacks");
 
         let identifier = generate_identifier(&url.to_string(), param_name);
-        let callback_url = generator.generate_callback_url(&identifier);
+        // Path-based callback works on a directly-reachable IP:port (the built-in
+        // listener); the sub-domain form covers wildcard-DNS callback servers.
+        let callback_url = generator.generate_http_callback(&identifier);
+        let subdomain_callback = generator.generate_callback_url(&identifier);
 
-        // Inject the callback URL at the configured location (query or body).
-        let request = self.build_injected(url, param_name, &callback_url, &[]);
-        let _ = client.execute(request).await;
+        // Inject both callback forms at the configured location (query or body).
+        for cb in [&callback_url, &subdomain_callback] {
+            let request = self.build_injected(url, param_name, cb, &[]);
+            let _ = client.execute(request).await;
+        }
 
         // Wait for callback
         if listener.wait_for_callback(&identifier, 5).await {

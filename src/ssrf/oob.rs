@@ -209,9 +209,17 @@ impl OobCallbackGenerator {
         Self { callback_domain }
     }
     
-    /// Generate a unique callback URL with identifier
+    /// Generate a unique callback URL with identifier (sub-domain form, for
+    /// wildcard-DNS callback servers).
     pub fn generate_callback_url(&self, identifier: &str) -> String {
         format!("http://{}.{}", identifier, self.callback_domain)
+    }
+
+    /// Path-based HTTP callback (`http://<domain>/<id>`). Works whenever the
+    /// callback host:port is directly reachable (e.g. the built-in listener on
+    /// an IP:port), without needing wildcard DNS.
+    pub fn generate_http_callback(&self, identifier: &str) -> String {
+        format!("http://{}/{}", self.callback_domain, identifier)
     }
     
     /// Generate a DNS callback hostname
