@@ -1,0 +1,13 @@
+target,type,expected,anvil_found,anvil_sec,dalfox_found,dalfox_sec
+xss-body-html,xss,vulnerable,1,1.24,1,12.8
+xss-attr-dq,xss,vulnerable,1,1.6,1,13.02
+xss-attr-sq,xss,vulnerable,1,2.22,1,13.99
+xss-js-string,xss,vulnerable,1,5.73,1,7.03
+xss-comment,xss,vulnerable,1,6.53,1,12.18
+xss-href-url,xss,vulnerable,1,1.59,1,14.79
+xss-filtered-attr,xss,vulnerable,1,5.42,1,12.17
+xss-post-body,xss,vulnerable,1,1.5,0,2.77
+xss-dom-innerhtml,xss,vulnerable,1,2.3,1,12.8
+xss-safe-escaped,xss,safe,0,7.45,0,13.95
+xss-safe-attr,xss,safe,0,7.64,0,10.38
+xss-safe-csp,xss,safe,0,7.7,1,12.17

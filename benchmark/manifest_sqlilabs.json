@@ -1,0 +1,15 @@
+{
+  "description": "Ground truth for sqli-labs (MySQL). Run with: --manifest manifest_sqlilabs.json --base http://127.0.0.1:8081 --only sqli. All levels are injectable; the param/context varies by Less number.",
+  "targets": [
+    { "id": "labs-01-string",      "type": "sqli", "path": "/Less-1/",  "param": "id", "method": "GET",  "value": "1", "expected": "vulnerable", "note": "single-quote string; error/union/blind" },
+    { "id": "labs-02-numeric",     "type": "sqli", "path": "/Less-2/",  "param": "id", "method": "GET",  "value": "1", "expected": "vulnerable", "note": "numeric; error/union" },
+    { "id": "labs-03-paren-quote", "type": "sqli", "path": "/Less-3/",  "param": "id", "method": "GET",  "value": "1", "expected": "vulnerable", "note": "single-quote + parenthesis ('$id')" },
+    { "id": "labs-04-paren-dquote","type": "sqli", "path": "/Less-4/",  "param": "id", "method": "GET",  "value": "1", "expected": "vulnerable", "note": "double-quote + parenthesis (\"$id\")" },
+    { "id": "labs-05-blind",       "type": "sqli", "path": "/Less-5/",  "param": "id", "method": "GET",  "value": "1", "expected": "vulnerable", "note": "single-quote; blind (no data output)" },
+    { "id": "labs-06-blind-dquote","type": "sqli", "path": "/Less-6/",  "param": "id", "method": "GET",  "value": "1", "expected": "vulnerable", "note": "double-quote; blind" },
+    { "id": "labs-08-boolean",     "type": "sqli", "path": "/Less-8/",  "param": "id", "method": "GET",  "value": "1", "expected": "vulnerable", "note": "single-quote; boolean-blind (no error)" },
+    { "id": "labs-09-time",        "type": "sqli", "path": "/Less-9/",  "param": "id", "method": "GET",  "value": "1", "expected": "vulnerable", "note": "single-quote; time-based only" },
+    { "id": "labs-10-time-dquote", "type": "sqli", "path": "/Less-10/", "param": "id", "method": "GET",  "value": "1", "expected": "vulnerable", "note": "double-quote; time-based only" },
+    { "id": "labs-11-post-login",  "type": "sqli", "path": "/Less-11/", "param": "uname", "method": "POST", "value": "admin", "body": "uname=admin&passwd=admin&submit=Submit", "expected": "vulnerable", "note": "POST login form; single-quote" }
+  ]
+}
