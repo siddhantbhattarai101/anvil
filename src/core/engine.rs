@@ -769,6 +769,29 @@ impl Engine {
     }
     
     /// Legacy XSS scan (kept for backwards compatibility)
+    /// Whether a response's Content-Security-Policy blocks inline script/event
+    /// execution — i.e. it has an effective script directive (script-src, or
+    /// default-src as fallback) that lacks `unsafe-inline`. Reflected inline XSS
+    /// cannot execute under such a policy, so it should not be reported.
+    fn csp_blocks_inline(headers: &std::collections::HashMap<String, String>) -> bool {
+        let csp = match headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-security-policy"))
+        {
+            Some((_, v)) => v.to_lowercase(),
+            None => return false,
+        };
+        let directives: Vec<&str> = csp.split(';').map(|d| d.trim()).collect();
+        let script_dir = directives
+            .iter()
+            .find(|d| d.starts_with("script-src"))
+            .or_else(|| directives.iter().find(|d| d.starts_with("default-src")));
+        match script_dir {
+            Some(d) => !d.contains("unsafe-inline"),
+            None => false,
+        }
+    }
+
     async fn run_simple_xss_scan(
         &self,
         client: &HttpClient,
@@ -861,12 +884,21 @@ impl Engine {
                 let req = HttpRequest::new(Method::GET, test_url.clone());
                 match client.execute(req).await {
                     Ok(resp) => {
+                        // A restrictive CSP blocks inline execution, so reflected
+                        // inline XSS here is not exploitable — don't report it.
+                        if Self::csp_blocks_inline(&resp.headers) {
+                            if self.ctx.verbose {
+                                tracing::info!("  → reflected but blocked by Content-Security-Policy");
+                            }
+                            continue;
+                        }
+
                         let body = resp.body_text();
                         let body_lower = body.to_lowercase();
-                        
+
                         // Check if payload is reflected
                         let is_reflected = body.contains(payload);
-                        
+
                         if !is_reflected {
                             continue; // Payload was filtered/encoded
                         }

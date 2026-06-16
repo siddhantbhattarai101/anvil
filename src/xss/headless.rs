@@ -141,6 +141,14 @@ fn canary_payloads(token: &str) -> Vec<String> {
         format!("<img src=x onerror=\"{}\">", set),
         format!("\"><img src=x onerror=\"{}\">", set),
         format!("<svg onload=\"{}\">", set),
+        // Single-quote attribute breakout into a tag
+        format!("'><img src=x onerror='{}'>", set),
+        // Attribute event-handler breakout with NO tags (survives <> filtering;
+        // autofocus auto-fires onfocus on load, so no interaction needed)
+        format!("\" autofocus onfocus=\"{}\"", set),
+        format!("' autofocus onfocus='{}'", set),
+        // HTML-comment escape
+        format!("--><script>{}</script>", set),
         // Inside an existing script block
         format!("</script><script>{}</script>", set),
         // JS string breakouts
