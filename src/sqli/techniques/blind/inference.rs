@@ -115,12 +115,12 @@ pub async fn check_boolean_blind(request: &Request<'_>) -> Result<Option<BlindVe
         let false_ratio = page_ratio(&false_page, &baseline);
 
         // Confirm a boolean differential: the TRUE page closely matches the
-        // baseline, the FALSE page diverges, AND the gap between them is wide
-        // enough to rule out page noise.
-        if true_ratio > 0.9
-            && false_ratio < 0.6
-            && (true_ratio - false_ratio) > BOOL_DIFFERENTIAL_MARGIN
-        {
+        // baseline and the gap to the FALSE page is wide enough to rule out
+        // noise. We rely on the relative margin rather than an absolute
+        // false-page threshold — pages with heavy shared boilerplate keep a
+        // high similarity even when the meaningful content flips, so an absolute
+        // gate produces false negatives (e.g. "Welcome" vs "Not found").
+        if true_ratio > 0.9 && (true_ratio - false_ratio) > BOOL_DIFFERENTIAL_MARGIN {
             return Ok(Some(BlindVector {
                 dbms: DBMS::Unknown,
                 prefix: pl.prefix,

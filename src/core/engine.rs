@@ -560,10 +560,22 @@ impl Engine {
             };
 
             for param in &ep.parameters {
+                // `base_url` is `target_url.join(path)`, which drops the query —
+                // so re-seed this parameter's original value from the target URL
+                // (falling back to "1") so detection can build boundaries from
+                // the real value (needed for string-context SQLi).
+                let orig_val = target_url
+                    .query_pairs()
+                    .find(|(k, _)| k.as_ref() == param.as_str())
+                    .map(|(_, v)| v.to_string())
+                    .unwrap_or_else(|| "1".to_string());
+                let mut seeded_url = base_url.clone();
+                seeded_url.query_pairs_mut().append_pair(param, &orig_val);
+
                 let sqli_point = crate::sqli::request::InjectionPoint::from_context(
                     reqwest::Method::from_bytes(self.ctx.http_method.as_bytes())
                         .unwrap_or(reqwest::Method::GET),
-                    base_url.clone(),
+                    seeded_url.clone(),
                     param,
                     self.ctx.post_data.clone(),
                     Vec::new(),
@@ -572,7 +584,7 @@ impl Engine {
                 let mut engine =
                     crate::sqli::SqliEngine::with_injection_point(client, sqli_point)
                         .with_oob_callback(self.ctx.ssrf_config.oob_callback.clone());
-                if engine.detect(&base_url, param).await? {
+                if engine.detect(&seeded_url, param).await? {
                     let technique = engine.technique.unwrap_or(SqliTechnique::Union);
                     all_results.push(SqliResult {
                         endpoint: base_url.to_string(),
