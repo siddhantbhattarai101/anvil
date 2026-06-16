@@ -29,7 +29,7 @@ const BANNER: &str = r#"
  ║    Enterprise-grade Adversarial Security Testing Framework         ║
  ║                                                                    ║
  ║    Author  : Siddhant Bhattarai                                    ║
- ║    Version : 0.1.0                                                 ║
+ ║    Version : 0.2.0                                                 ║
  ║    License : Apache-2.0                                            ║
  ║                                                                    ║
  ╚════════════════════════════════════════════════════════════════════╝

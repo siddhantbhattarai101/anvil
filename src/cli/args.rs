@@ -4,7 +4,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "anvil",
-    version = "0.1.0",
+    version = "0.2.0",
     author = "Siddhant Bhattarai",
     about = "Enterprise-grade vulnerability scanner with advanced SQL injection, XSS, and SSRF detection",
     long_about = None,
