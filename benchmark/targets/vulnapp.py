@@ -215,23 +215,34 @@ class Handler(BaseHTTPRequestHandler):
                 extra_headers={"Content-Security-Policy": "script-src 'none'; object-src 'none'"},
             )
 
-        # ---------------- SSRF ----------------
-        if path == "/ssrf/fetch":
-            target = p("url")
+        # ---------------- SSRF (vulnerable) ----------------
+        if path == "/ssrf/fetch" or (path == "/ssrf/post_fetch" and post):
+            target = p("url")  # server fetches it and returns the content
             if not target:
-                return self._send("<p>provide ?url=</p>")
+                return self._send("<p>provide url</p>")
             try:
                 with urllib.request.urlopen(target, timeout=3) as resp:
                     body = resp.read(4096).decode("utf-8", "replace")
                 return self._send(f"<h1>Fetched</h1><pre>{body}</pre>")
             except Exception as e:  # noqa: BLE001 - vulnerable app reflects the error
                 return self._send(f"<h1>Fetch error</h1><pre>{e}</pre>")
-        if path == "/ssrf/safe":
+        if path == "/ssrf/blind":  # fetches but returns nothing useful (blind SSRF)
+            target = p("url")
+            try:
+                urllib.request.urlopen(target, timeout=3).read(64)
+            except Exception:
+                pass
+            return self._send("<h1>Request received</h1>")
+
+        # ---------------- SSRF (safe) ----------------
+        if path == "/ssrf/safe":  # strict allowlist
             target = p("url")
             allow = ("https://example.com", "http://example.com")
             if target.startswith(allow):
                 return self._send("<p>allowed</p>")
             return self._send("<p>blocked: host not allowlisted</p>")
+        if path == "/ssrf/reflect":  # echoes the URL but never fetches it
+            return self._send(f"<h1>You requested</h1><pre>{p('url')}</pre>")  # reflection != SSRF
 
         if path == "/health":
             return self._send("ok")

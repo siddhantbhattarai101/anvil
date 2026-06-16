@@ -21,7 +21,10 @@
     { "id": "xss-safe-attr",       "type": "xss",  "path": "/xss/attr_safe", "param": "q", "method": "GET",  "value": "test", "expected": "safe",       "note": "escaped attribute (must NOT flag)" },
     { "id": "xss-safe-csp",        "type": "xss",  "path": "/xss/csp",       "param": "q", "method": "GET",  "value": "test", "expected": "safe",       "note": "reflected but CSP blocks execution (must NOT flag)" },
 
-    { "id": "ssrf-fetch",          "type": "ssrf", "path": "/ssrf/fetch",  "param": "url",  "method": "GET",  "value": "http://example.com", "expected": "vulnerable", "note": "real server-side fetch" },
-    { "id": "ssrf-safe-allowlist", "type": "ssrf", "path": "/ssrf/safe",   "param": "url",  "method": "GET",  "value": "http://example.com", "expected": "safe",       "note": "allowlist-only (must NOT flag)" }
+    { "id": "ssrf-fetch",          "type": "ssrf", "path": "/ssrf/fetch",      "param": "url", "method": "GET",  "value": "http://example.com", "expected": "vulnerable", "note": "fetches & returns content" },
+    { "id": "ssrf-blind",          "type": "ssrf", "path": "/ssrf/blind",      "param": "url", "method": "GET",  "value": "http://example.com", "expected": "vulnerable", "note": "fetches but returns nothing (blind; needs OOB)" },
+    { "id": "ssrf-post-body",      "type": "ssrf", "path": "/ssrf/post_fetch", "param": "url", "method": "POST", "value": "http://example.com", "expected": "vulnerable", "note": "POST-body SSRF" },
+    { "id": "ssrf-safe-allowlist", "type": "ssrf", "path": "/ssrf/safe",       "param": "url", "method": "GET",  "value": "http://example.com", "expected": "safe",       "note": "strict allowlist (must NOT flag)" },
+    { "id": "ssrf-safe-reflect",   "type": "ssrf", "path": "/ssrf/reflect",    "param": "url", "method": "GET",  "value": "http://example.com", "expected": "safe",       "note": "echoes URL, never fetches (reflection != SSRF; must NOT flag)" }
   ]
 }
