@@ -137,7 +137,8 @@ impl Engine {
         // Crawl & parameter discovery
         // -------------------------------------------------
         else if self.ctx.profile.has(Capability::Crawl) {
-            let crawler = Crawler::new(self.ctx.crawl_depth as usize);
+            let crawler = Crawler::new(self.ctx.crawl_depth as usize)
+                .with_js_render(self.ctx.js_crawl);
             let sitemap = crawler
                 .crawl(&client, target_url.clone(), &self.ctx.scope)
                 .await?;

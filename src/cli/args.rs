@@ -31,6 +31,11 @@ pub struct Cli {
     #[arg(long, help_heading = "CORE FEATURES")]
     pub crawl: bool,
 
+    /// Render pages with JavaScript (headless Chrome) during crawl — discovers
+    /// SPA links, forms, and XHR/fetch API endpoints a static crawl misses
+    #[arg(long = "js-crawl", help_heading = "CORE FEATURES")]
+    pub js_crawl: bool,
+
     /// Enable SQL Injection scanning (use --sqli for basic, see SQLI DETECTION for advanced)
     #[arg(long, help_heading = "CORE FEATURES")]
     pub sqli: bool,

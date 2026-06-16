@@ -50,6 +50,8 @@ pub struct Context {
     pub target: String,
     pub rate_limit: u32,
     pub crawl_depth: u32,
+    /// Render JavaScript during crawl (headless Chrome) for SPA discovery.
+    pub js_crawl: bool,
     pub quiet: bool,
     pub verbose: bool,
     pub scope: Scope,
@@ -254,6 +256,7 @@ impl Context {
             target: cli.target,
             rate_limit: cli.rate,
             crawl_depth: cli.depth,
+            js_crawl: cli.js_crawl,
             quiet: cli.quiet,
             verbose: cli.verbose,
             scope,

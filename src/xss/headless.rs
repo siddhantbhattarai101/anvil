@@ -172,11 +172,66 @@ impl HeadlessVerifier {
         Ok(None)
     }
 
+    /// Render a URL in the headless browser (executing its JavaScript) and
+    /// return the post-JS DOM HTML plus every network request the page issued
+    /// (XHR/fetch/sub-resources) — i.e. the real attack surface of an SPA, which
+    /// a static HTML fetch never sees.
+    pub async fn render(&self, url: &str) -> Result<RenderedPage> {
+        use chromiumoxide::cdp::browser_protocol::network::{
+            EnableParams, EventRequestWillBeSent,
+        };
+        use std::sync::{Arc, Mutex};
+
+        let page = self.browser.new_page("about:blank").await?;
+        let _ = page.execute(EnableParams::default()).await;
+
+        let requests: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let collector = if let Ok(mut events) =
+            page.event_listener::<EventRequestWillBeSent>().await
+        {
+            let sink = requests.clone();
+            Some(tokio::spawn(async move {
+                while let Some(ev) = events.next().await {
+                    if let Ok(mut g) = sink.lock() {
+                        g.push((ev.request.method.clone(), ev.request.url.clone()));
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
+        let _ = page.goto(url).await;
+        let _ = page.wait_for_navigation().await;
+        // Give SPA frameworks + their XHR/fetch calls time to run.
+        tokio::time::sleep(Duration::from_millis(900)).await;
+
+        let html = page.content().await.unwrap_or_default();
+        if let Some(c) = collector {
+            c.abort();
+        }
+        let captured = requests.lock().map(|g| g.clone()).unwrap_or_default();
+        let _ = page.close().await;
+
+        Ok(RenderedPage {
+            html,
+            requests: captured,
+        })
+    }
+
     /// Shut the browser down.
     pub async fn close(mut self) {
         let _ = self.browser.close().await;
         self.handler_task.abort();
     }
+}
+
+/// A rendered page: its post-JavaScript HTML and the requests it issued.
+#[derive(Debug, Default)]
+pub struct RenderedPage {
+    pub html: String,
+    /// (method, url) for every request the page made (XHR/fetch/sub-resources).
+    pub requests: Vec<(String, String)>,
 }
 
 /// HTML-escape a string for safe inclusion in a form attribute value. The
