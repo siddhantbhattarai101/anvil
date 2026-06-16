@@ -4,11 +4,26 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "anvil",
-    version = "0.5.0",
+    version = "0.6.0",
     author = "Siddhant Bhattarai",
-    about = "Enterprise-grade vulnerability scanner with advanced SQL injection, XSS, and SSRF detection",
-    long_about = None,
-    after_help = "EXAMPLES:\n  anvil -t http://target.com/page?id=1 -p id --sqli\n  anvil -t http://target.com/search?q=test -p q --xss\n  anvil -t http://target.com --all -o report.json\n\nMore info: https://github.com/siddhantbhattarai/anvil"
+    about = "ANVIL — adversarial web vulnerability scanner (SQLi · XSS · SSRF · Command Injection · Path Traversal)",
+    long_about = "ANVIL is an enterprise-grade, evidence-driven web application security scanner.\n\
+                  It detects and safely proves five vulnerability classes — SQL injection (CWE-89),\n\
+                  cross-site scripting (CWE-79), server-side request forgery (CWE-918), OS command\n\
+                  injection (CWE-78), and path traversal / LFI (CWE-22) — with low false positives,\n\
+                  then emits machine-readable reports (text, JSON, CSV) for triage and CI gating.\n\n\
+                  Run one targeted check with -t/--param plus a class flag (e.g. --sqli), or sweep\n\
+                  everything with --all. Options are grouped by area below.",
+    after_help = "EXAMPLES:\n  \
+                  # Targeted single-class checks\n  \
+                  anvil -t 'http://host/page?id=1'     -p id   --sqli\n  \
+                  anvil -t 'http://host/search?q=t'    -p q    --xss --xss-all\n  \
+                  anvil -t 'http://host/fetch?url=x'   -p url  --ssrf\n  \
+                  anvil -t 'http://host/ping?host=x'   -p host --cmdi\n  \
+                  anvil -t 'http://host/view?file=a'   -p file --path-traversal\n\n  \
+                  # Full sweep with crawl + JSON report\n  \
+                  anvil -t http://host --all --crawl -o report.json --format json\n\n\
+                  DOCS:  man anvil   ·   https://github.com/siddhantbhattarai/anvil",
 )]
 pub struct Cli {
     /// Target URL (e.g. https://example.com/page.php?id=1)
@@ -31,8 +46,7 @@ pub struct Cli {
     #[arg(long, help_heading = "CORE FEATURES")]
     pub crawl: bool,
 
-    /// Render pages with JavaScript (headless Chrome) during crawl — discovers
-    /// SPA links, forms, and XHR/fetch API endpoints a static crawl misses
+    /// Render JavaScript (headless Chrome) while crawling — finds SPA routes, forms, and XHR APIs
     #[arg(long = "js-crawl", help_heading = "CORE FEATURES")]
     pub js_crawl: bool,
 
@@ -77,15 +91,15 @@ pub struct Cli {
     pub xss_blind: bool,
 
     /// Callback domain for blind XSS (e.g., attacker.com)
-    #[arg(long = "callback", help_heading = "XSS DETECTION", requires = "xss_blind")]
+    #[arg(long = "callback", value_name = "DOMAIN", help_heading = "XSS DETECTION", requires = "xss_blind")]
     pub xss_callback: Option<String>,
 
-    /// Maximum payloads to test per context (default: 20)
-    #[arg(long = "max-payloads", help_heading = "XSS DETECTION", default_value = "20")]
+    /// Maximum payloads to test per context
+    #[arg(long = "max-payloads", value_name = "N", help_heading = "XSS DETECTION", default_value = "20")]
     pub max_payloads: usize,
 
     /// XSS context to target (html, attribute, js_string, js_code, url, polyglot)
-    #[arg(long = "xss-context", help_heading = "XSS DETECTION")]
+    #[arg(long = "xss-context", value_name = "CONTEXT", help_heading = "XSS DETECTION")]
     pub xss_context: Option<String>,
 
     // ═══════════════════════════════════════════════════════════════════
@@ -109,11 +123,11 @@ pub struct Cli {
     pub ssrf_schemes: bool,
 
     /// Callback domain for blind SSRF detection (e.g., attacker.com)
-    #[arg(long = "ssrf-callback", help_heading = "SSRF DETECTION")]
+    #[arg(long = "ssrf-callback", value_name = "DOMAIN", help_heading = "SSRF DETECTION")]
     pub ssrf_callback: Option<String>,
 
-    /// Maximum payloads to test per parameter for SSRF (default: 20)
-    #[arg(long = "ssrf-max-payloads", help_heading = "SSRF DETECTION", default_value = "20")]
+    /// Maximum payloads to test per parameter for SSRF
+    #[arg(long = "ssrf-max-payloads", value_name = "N", help_heading = "SSRF DETECTION", default_value = "20")]
     pub ssrf_max_payloads: usize,
 
     // ═══════════════════════════════════════════════════════════════════
