@@ -6,6 +6,7 @@ use crate::ssrf::evidence::{Evidence, EvidenceType, SsrfClassification, SsrfResu
 use crate::ssrf::oob::{generate_identifier, OobCallbackGenerator, OobCallbackListener};
 use crate::ssrf::probes::{SsrfProbe, SsrfProbeGenerator, SsrfProbeType};
 use crate::ssrf::SsrfConfig;
+use crate::sqli::request::InjectionPoint;
 use crate::validation::baseline::Baseline;
 use crate::validation::diff::diff;
 use reqwest::Method;
@@ -110,8 +111,37 @@ impl SsrfDetector {
         Ok(None)
     }
 
-    /// Execute a request with `param_name` replaced by `value`, preserving all
-    /// other query parameters. Returns the HTTP response.
+    /// Build a request that injects `payload` at the configured location: the
+    /// POST body when `config.post_body` is set (form or JSON auto-detected),
+    /// otherwise the URL query string. `extra_headers` carries probe-specific
+    /// headers (e.g. cloud-metadata headers). Auth cookies/headers travel via
+    /// the HTTP client, so they are not duplicated here.
+    fn build_injected(
+        &self,
+        url: &Url,
+        param: &str,
+        payload: &str,
+        extra_headers: &[(String, String)],
+    ) -> HttpRequest {
+        let point = match &self.config.post_body {
+            Some(body) => InjectionPoint::from_context(
+                Method::POST,
+                url.clone(),
+                param,
+                Some(body.clone()),
+                Vec::new(),
+                extra_headers.to_vec(),
+            ),
+            None => {
+                let mut p = InjectionPoint::query(url.clone(), param);
+                p.headers = extra_headers.to_vec();
+                p
+            }
+        };
+        point.build_request(payload)
+    }
+
+    /// Execute a request injecting `value` at the configured location.
     async fn request_with_param(
         &self,
         client: &HttpClient,
@@ -119,19 +149,7 @@ impl SsrfDetector {
         param_name: &str,
         value: &str,
     ) -> anyhow::Result<crate::http::response::HttpResponse> {
-        let mut test_url_obj = url.clone();
-        {
-            let mut pairs = test_url_obj.query_pairs_mut();
-            pairs.clear();
-            for (k, v) in url.query_pairs() {
-                if k == param_name {
-                    pairs.append_pair(&k, value);
-                } else {
-                    pairs.append_pair(&k, &v);
-                }
-            }
-        }
-        let request = HttpRequest::new(Method::GET, test_url_obj);
+        let request = self.build_injected(url, param_name, value, &[]);
         client.execute(request).await
     }
 
@@ -204,28 +222,14 @@ impl SsrfDetector {
     ) -> anyhow::Result<Option<SsrfResult>> {
         tracing::debug!("Testing probe: {} ({})", probe.description, probe.payload);
 
-        // Build test URL
-        let mut test_url = url.clone();
-        {
-            let mut pairs = test_url.query_pairs_mut();
-            pairs.clear();
-            for (k, v) in url.query_pairs() {
-                if k == param_name {
-                    pairs.append_pair(&k, &probe.payload);
-                } else {
-                    pairs.append_pair(&k, &v);
-                }
-            }
-        }
+        // Build the request, injecting the probe payload at the configured
+        // location (query or POST body) and attaching any provider-required
+        // headers (e.g. GCP Metadata-Flavor, Azure Metadata: true — without
+        // which those metadata endpoints return 403).
+        let request = self.build_injected(url, param_name, &probe.payload, &probe.headers);
 
         // Measure timing
         let start = Instant::now();
-        let mut request = HttpRequest::new(Method::GET, test_url.clone());
-        // Attach any provider-required headers (GCP Metadata-Flavor, Azure
-        // Metadata: true) — without these the metadata endpoints return 403.
-        for (name, value) in &probe.headers {
-            request.set_header(name, value);
-        }
         let response = match client.execute(request).await {
             Ok(r) => r,
             Err(e) => {
@@ -500,22 +504,8 @@ impl SsrfDetector {
         let identifier = generate_identifier(&url.to_string(), param_name);
         let callback_url = generator.generate_callback_url(&identifier);
 
-        // Inject callback URL
-        let mut test_url = url.clone();
-        {
-            let mut pairs = test_url.query_pairs_mut();
-            pairs.clear();
-            for (k, v) in url.query_pairs() {
-                if k == param_name {
-                    pairs.append_pair(&k, &callback_url);
-                } else {
-                    pairs.append_pair(&k, &v);
-                }
-            }
-        }
-
-        // Send request
-        let request = HttpRequest::new(Method::GET, test_url);
+        // Inject the callback URL at the configured location (query or body).
+        let request = self.build_injected(url, param_name, &callback_url, &[]);
         let _ = client.execute(request).await;
 
         // Wait for callback
@@ -697,6 +687,47 @@ impl SsrfDetector {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_injected_uses_query_by_default() {
+        let det = SsrfDetector::new(SsrfConfig::default());
+        let url = Url::parse("http://t/a?url=x&q=1").unwrap();
+        let req = det.build_injected(&url, "url", "http://169.254.169.254/", &[]);
+        assert_eq!(req.method, Method::GET);
+        assert!(req.url.query().unwrap().contains("url=http"));
+        assert!(req.url.query().unwrap().contains("q=1"));
+        assert!(req.body.is_none());
+    }
+
+    #[test]
+    fn build_injected_uses_post_body_when_configured() {
+        let mut cfg = SsrfConfig::default();
+        cfg.post_body = Some("url=orig&x=1".to_string());
+        let det = SsrfDetector::new(cfg);
+        let url = Url::parse("http://t/a").unwrap();
+        let req = det.build_injected(&url, "url", "http://169.254.169.254/", &[]);
+        assert_eq!(req.method, Method::POST);
+        let body = String::from_utf8_lossy(req.body.as_deref().unwrap_or_default()).to_string();
+        assert!(body.contains("url=http")); // injected
+        assert!(body.contains("x=1")); // other field preserved
+    }
+
+    #[test]
+    fn build_injected_attaches_extra_headers() {
+        let det = SsrfDetector::new(SsrfConfig::default());
+        let url = Url::parse("http://t/a?url=x").unwrap();
+        let headers = vec![("Metadata-Flavor".to_string(), "Google".to_string())];
+        let req = det.build_injected(&url, "url", "http://metadata.google/", &headers);
+        assert_eq!(
+            req.headers.get("metadata-flavor").and_then(|v| v.to_str().ok()),
+            Some("Google")
+        );
     }
 }
 

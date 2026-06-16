@@ -54,8 +54,13 @@ impl SsrfScanner {
 
             tracing::debug!("Scanning endpoint: {}", endpoint_url);
 
-            // Identify SSRF candidate parameters
-            let candidates = self.param_identifier.identify_from_url(&endpoint_url);
+            // Identify SSRF candidate parameters. In POST-body mode the
+            // candidates come from the body (and are injected there); otherwise
+            // from the URL query string.
+            let candidates = match &self.config.post_body {
+                Some(body) => self.param_identifier.identify_from_post_data(body),
+                None => self.param_identifier.identify_from_url(&endpoint_url),
+            };
 
             if candidates.is_empty() {
                 tracing::debug!("No SSRF candidate parameters found in {}", endpoint_url);
