@@ -1,0 +1,19 @@
+{
+  "description": "Ground-truth labels for the local vulnapp corpus. base_url is filled in by the runner.",
+  "targets": [
+    { "id": "sqli-error-numeric",  "type": "sqli", "path": "/sqli/error",  "param": "id",   "method": "GET",  "value": "1",     "expected": "vulnerable", "note": "numeric, error-based + UNION" },
+    { "id": "sqli-blind-numeric",  "type": "sqli", "path": "/sqli/blind",  "param": "id",   "method": "GET",  "value": "1",     "expected": "vulnerable", "note": "boolean-blind" },
+    { "id": "sqli-string-quote",   "type": "sqli", "path": "/sqli/string", "param": "name", "method": "GET",  "value": "admin", "expected": "vulnerable", "note": "single-quote string context" },
+    { "id": "sqli-time-numeric",   "type": "sqli", "path": "/sqli/time",   "param": "id",   "method": "GET",  "value": "1",     "expected": "vulnerable", "note": "time-based (SLEEP)" },
+    { "id": "sqli-post-body",      "type": "sqli", "path": "/sqli/post",   "param": "id",   "method": "POST", "value": "1",     "expected": "vulnerable", "note": "POST body injection" },
+    { "id": "sqli-safe-param",     "type": "sqli", "path": "/sqli/safe",   "param": "id",   "method": "GET",  "value": "1",     "expected": "safe",       "note": "parameterized (must NOT flag)" },
+
+    { "id": "xss-body-html",       "type": "xss",  "path": "/xss/body",    "param": "q",    "method": "GET",  "value": "test",  "expected": "vulnerable", "note": "HTML body context" },
+    { "id": "xss-attr",            "type": "xss",  "path": "/xss/attr",    "param": "q",    "method": "GET",  "value": "test",  "expected": "vulnerable", "note": "attribute context" },
+    { "id": "xss-js-string",       "type": "xss",  "path": "/xss/js",      "param": "q",    "method": "GET",  "value": "test",  "expected": "vulnerable", "note": "JS string context" },
+    { "id": "xss-safe-escaped",    "type": "xss",  "path": "/xss/safe",    "param": "q",    "method": "GET",  "value": "test",  "expected": "safe",       "note": "html.escape (must NOT flag)" },
+
+    { "id": "ssrf-fetch",          "type": "ssrf", "path": "/ssrf/fetch",  "param": "url",  "method": "GET",  "value": "http://example.com", "expected": "vulnerable", "note": "real server-side fetch" },
+    { "id": "ssrf-safe-allowlist", "type": "ssrf", "path": "/ssrf/safe",   "param": "url",  "method": "GET",  "value": "http://example.com", "expected": "safe",       "note": "allowlist-only (must NOT flag)" }
+  ]
+}

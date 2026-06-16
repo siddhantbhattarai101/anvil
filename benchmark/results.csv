@@ -1,0 +1,13 @@
+target,type,expected,anvil_found,anvil_sec,dalfox_found,dalfox_sec,sqlmap_found,sqlmap_sec
+sqli-error-numeric,sqli,vulnerable,1,1.85,,,1,12.16
+sqli-blind-numeric,sqli,vulnerable,0,9.91,,,1,3.42
+sqli-string-quote,sqli,vulnerable,0,9.92,,,1,12.05
+sqli-time-numeric,sqli,vulnerable,0,9.91,,,0,1.27
+sqli-post-body,sqli,vulnerable,1,1.84,,,1,12.26
+sqli-safe-param,sqli,safe,0,9.93,,,0,1.07
+xss-body-html,xss,vulnerable,1,1.14,1,12.78,,
+xss-attr,xss,vulnerable,1,1.57,1,11.59,,
+xss-js-string,xss,vulnerable,1,3.8,1,9.75,,
+xss-safe-escaped,xss,safe,0,5.68,0,10.71,,
+ssrf-fetch,ssrf,vulnerable,1,39.87,,,,
+ssrf-safe-allowlist,ssrf,safe,0,1.04,,,,
