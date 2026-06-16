@@ -62,14 +62,13 @@ python3 benchmark/run_benchmark.py --manifest manifest_sqlilabs.json \
 
 | Tool | Scope (n) | Precision | Recall | F1 | Total time |
 |------|-----------|-----------|--------|----|-----------|
-| anvil  | 10 | 1.00 | 0.90 | **0.95** | 150.9s |
+| anvil  | 10 | 1.00 | **1.00** | **1.00** | 162.3s |
 | sqlmap | 10 | 1.00 | 0.90 | 0.95 | 106.4s |
 
-**ANVIL matches sqlmap on the canonical SQLi benchmark — 9/10 each, F1 0.95.**
+**ANVIL beats sqlmap on the canonical SQLi benchmark — 10/10 (F1 1.00) vs sqlmap's 9/10 (F1 0.95)** at the same `--level 1 --risk 1`.
 ANVIL catches single-/double-quote string, numeric, parenthesised contexts
-(`('$id')`, `("$id")`), blind, boolean-blind, time-based, and the POST login form
-(multi-location injection). Both miss only Less-10 (double-quote *time-based*) at
-`--level 1 --risk 1` — sqlmap needs a higher level for it too. ANVIL is slower
+(`('$id')`, `("$id")`), blind, boolean-blind, time-based (incl. the double-quote Less-10 that sqlmap misses at level 1), and
+the POST login form (multi-location injection). ANVIL is slower
 (time-based confirmatory sleeps); a `--release` build narrows the gap.
 
 ### Before → after (the harness driving a fix)
