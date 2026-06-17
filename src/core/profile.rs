@@ -16,19 +16,40 @@ impl ScanProfile {
         }
     }
 
-    /// Create a profile with all capabilities enabled (except exploitation)
+    /// Full OWASP-sweep profile (`--all` / `--owasp`): every detection class that
+    /// runs reliably with no extra inputs. Deliberately excluded:
+    ///  - OobSqlInjection / BlindXss — need an out-of-band callback (--callback)
+    ///  - SecondOrderSqli — needs a trigger-URL workflow
+    ///  - DomXss / StoredXss — need headless Chrome / a crawl workflow
+    ///  - ProofMode / ExploitMode / HashDump — data-extraction, never automatic
     pub fn all() -> Self {
         use Capability::*;
         Self {
             enabled: [
+                // recon
                 Crawl,
                 Fingerprint,
+                // A03 injection
                 SqlInjection,
                 TimeSqlInjection,
                 StackedSqlInjection,
-                // Note: OOB requires callback, so not enabled by default
-                // SecondOrderSqli requires specific workflow
+                NoSqli,
                 Xss,
+                Cmdi,
+                Ssti,
+                Crlf,
+                Xxe,
+                // A10 / A01
+                Ssrf,
+                PathTraversal,
+                OpenRedirect,
+                Cors,
+                // passive analyzers (A05 / A07 / A02 / A06)
+                SecurityHeaders,
+                Jwt,
+                Secrets,
+                Components,
+                Sri,
             ]
             .into_iter()
             .collect(),

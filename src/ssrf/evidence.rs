@@ -353,10 +353,23 @@ impl SsrfResult {
             .iter()
             .map(|e| e.confidence)
             .fold(0.0f32, f32::max);
-        
-        // Combine with base classification confidence
-        self.confidence = (self.classification.base_confidence() + max_evidence_confidence) / 2.0;
-        self.confidence = self.confidence.min(0.99);
+
+        // Confidence is driven by the STRONGEST evidence, not diluted by
+        // averaging it with the base classification. Averaging previously turned
+        // a concrete 0.95 content-based proof into 0.725. Floor at the best of
+        // (base classification, strongest evidence), then add a small bounded
+        // bonus when multiple independent signals corroborate.
+        let base = self.classification.base_confidence();
+        let mut combined = base.max(max_evidence_confidence);
+        let corroborating = self
+            .evidence
+            .iter()
+            .filter(|e| e.confidence >= 0.5)
+            .count();
+        if corroborating > 1 {
+            combined += 0.03 * (corroborating.min(4) as f32 - 1.0);
+        }
+        self.confidence = combined.min(0.99);
     }
     
     /// Check if this result should be reported based on thresholds

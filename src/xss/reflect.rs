@@ -113,12 +113,30 @@ fn generate_markers() -> Vec<String> {
 }
 
 fn random_string(len: usize) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
+
+    // Monotonic per-process counter guarantees uniqueness even for markers
+    // generated within the same nanosecond (the old timestamp-only scheme
+    // collided and caused substring false positives).
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("{:x}", timestamp)[..len.min(16)].to_string()
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    // RandomState is seeded from the OS RNG, giving real per-process entropy
+    // without adding the `rand` crate dependency.
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(nanos);
+    hasher.write_u64(seq);
+    let entropy = hasher.finish();
+
+    let raw = format!("{:016x}{:016x}", nanos ^ entropy, seq);
+    raw[..len.min(raw.len())].to_string()
 }
 
 /// Probe with POST data for forms
@@ -253,22 +271,38 @@ fn detect_encoding_level(body: &str, marker: &str) -> EncodingLevel {
         return EncodingLevel::DoubleEncode;
     }
     
-    // Check if all special chars are encoded
+    // Angle brackets are the characters that enable HTML/tag injection. If BOTH
+    // are encoded the payload cannot break out into markup, which is full
+    // protection regardless of whether quotes happen to be encoded too. (The old
+    // logic required 3+ of 4 char *types* encoded and so mislabelled a fully
+    // bracket-encoded reflection as merely "Partial".)
+    if encoded_lt && encoded_gt {
+        return EncodingLevel::Full;
+    }
+
     let encoding_count = [encoded_lt, encoded_gt, encoded_quote, encoded_apos]
         .iter()
         .filter(|&&x| x)
         .count();
-    
-    match encoding_count {
-        0 => EncodingLevel::None,
-        1..=2 => EncodingLevel::Partial,
-        _ => EncodingLevel::Full,
+
+    if encoding_count == 0 {
+        EncodingLevel::None
+    } else {
+        EncodingLevel::Partial
     }
 }
 
 fn detect_sanitization_patterns(body: &str, marker: &str) -> Vec<String> {
     let mut patterns = Vec::new();
-    
+
+    // If the dangerous marker does not appear verbatim, its special characters
+    // were stripped, encoded, or the payload was filtered out entirely — a
+    // strong signal the input was neutralised. (Only meaningful because this is
+    // called after a benign marker was confirmed to reflect.)
+    if !body.contains(marker) {
+        patterns.push("Marker altered or stripped (possible sanitization)".to_string());
+    }
+
     // Check for common sanitization
     if body.contains(&marker.replace('<', ""))
         || body.contains(&marker.replace('>', ""))

@@ -4,4 +4,4 @@ pub mod comparison;
 pub mod connect;
 
 pub use comparison::*;
-pub use connect::Request;
+pub use connect::{InjectionLocation, InjectionPoint, Request};

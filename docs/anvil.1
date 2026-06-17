@@ -1,0 +1,442 @@
+.\" Manpage for anvil.
+.\" Contact: https://github.com/siddhantbhattarai/anvil
+.TH ANVIL 1 "2026-06-16" "anvil 0.6.0" "ANVIL Security Scanner Manual"
+.SH NAME
+anvil \- adversarial web application vulnerability scanner
+.SH SYNOPSIS
+.B anvil
+.B \-t
+.I URL
+.RB [ \-p
+.IR PARAM ]
+.RI [ CLASS-FLAGS ]
+.RI [ OPTIONS ]
+.br
+.B anvil
+.B \-\-target
+.I URL
+.B \-\-all
+.RB [ \-\-crawl ]
+.RB [ \-o
+.IR FILE ]
+.RB [ \-\-format
+.IR FORMAT ]
+.br
+.B anvil
+.B \-\-mcp
+.SH DESCRIPTION
+.B ANVIL
+is an enterprise-grade, evidence-driven web application security scanner.
+It detects and safely proves eleven active classes of vulnerability plus five
+passive audits with a low false-positive rate, then emits machine-readable
+reports suitable for triage and continuous-integration gating. It can also run
+as an MCP server (\fB\-\-mcp\fR) so AI agents can drive it as a native tool.
+.PP
+Each finding is confirmed by observable evidence (a database error or boolean
+oracle, JavaScript execution, an out-of-band callback, command output, or a
+file-content signature) rather than by payload reflection alone, so reflected
+input cannot by itself raise a finding.
+.PP
+Run a single targeted check by combining
+.B \-t/\-\-target
+and
+.B \-p/\-\-param
+with one class flag (for example
+.BR \-\-sqli ),
+or sweep every class with
+.BR \-\-all .
+When a parameter is not given explicitly, ANVIL discovers testable parameters
+from the target URL and, with
+.BR \-\-crawl ,
+from the wider application.
+.SH DETECTION CLASSES
+.TP
+.B \-\-sqli
+SQL injection (CWE-89). Boolean, error, union, time-based, stacked,
+out-of-band, and second-order techniques. See
+.B SQLI DETECTION
+options.
+.TP
+.BR \-\-nosqli ", " \-\-nosql
+NoSQL injection (CWE-943). MongoDB-style operator injection, confirmed by a
+boolean differential between an always-true (\fIparam\fR[$ne]) and always-false
+(\fIparam\fR[$eq]) operator; operator tokens are stripped before comparing so a
+reflected payload cannot false-positive.
+.TP
+.B \-\-xss
+Cross-site scripting (CWE-79). Reflected by default; stored, DOM, and blind
+modes via
+.B XSS DETECTION
+options.
+.TP
+.B \-\-ssrf
+Server-side request forgery (CWE-918). Internal ranges, cloud metadata
+endpoints, and non-HTTP schemes via
+.B SSRF DETECTION
+options.
+.TP
+.B \-\-cmdi
+OS command injection (CWE-78). Output-based and time-based detection.
+.TP
+.BR \-\-path\-traversal ", " \-\-lfi
+Path traversal / local file inclusion (CWE-22). Confirmed only when a known
+file's content signature appears in the response.
+.TP
+.B \-\-xxe
+XML External Entity injection (CWE-611). POSTs an XML document declaring an
+external file entity and confirms only when the file's content signature
+(\fBroot:\fR...\fB:0:0:\fR) appears in the response \(em proof the parser resolved it.
+Endpoint-level.
+.TP
+.B \-\-ssti
+Server-side template injection (CWE-1336). A marker-wrapped arithmetic
+expression is injected across common template syntaxes (Jinja2/Twig, Freemarker,
+ERB, Smarty, Razor, Pug); confirmed only when the engine returns the evaluated
+product. Frequently escalates to remote code execution.
+.TP
+.BR \-\-open\-redirect ", " \-\-redirect
+Open redirect / unvalidated forward (CWE-601). A canary host is injected via the
+common bypass forms (absolute, scheme-relative, missing-slash, backslash) and
+confirmed only when the effective redirect target host \(em parsed from the
+.B Location
+header, a meta refresh, or a JavaScript assignment \(em resolves to the canary.
+.TP
+.B \-\-cors
+CORS misconfiguration (CWE-942). Sends crafted
+.B Origin
+headers and inspects
+.B Access-Control-Allow-Origin
+/
+.BR Access-Control-Allow-Credentials .
+Reported only when the server reflects an arbitrary or null origin (worst with
+credentials enabled); wildcard
+.B ACAO
+is noted separately at low severity. This check is endpoint-level, not
+parameter-based.
+.TP
+.B \-\-crlf
+CRLF / HTTP response header injection (CWE-113). Injects a CR/LF sequence plus a
+unique
+.B X-Anvil-Crlf
+header through the parameter; confirmed only when that header appears in the
+response headers (a body reflection cannot create a response header).
+.TP
+.BR \-\-security\-headers ", " \-\-sec\-headers
+Passive security-header & cookie audit (OWASP A05). Sends no payloads; inspects
+the response for missing or weak hardening controls \(em HSTS, Content-Security-
+Policy, anti-clickjacking (X-Frame-Options / frame-ancestors), X-Content-Type-
+Options, Referrer-Policy, version disclosure, and insecure cookie flags
+(Secure / HttpOnly / SameSite). Endpoint-level; one finding per gap.
+.TP
+.B \-\-jwt
+JSON Web Token weakness analysis (CWE-347). Offline: harvests JWTs from
+.BR \-\-cookie / \-\-header
+and the target response, then decodes and checks each for the
+.B none
+algorithm (unsigned), a weak/guessable HMAC secret (verified against a built-in
+list \(em the cracked secret is reported), and a missing
+.B exp
+claim. No tokens are forged or replayed.
+.TP
+.BR \-\-secrets ", " \-\-data\-exposure
+Sensitive-data / secret exposure (OWASP A02). Passive: scans response bodies for
+high-confidence, fixed-signature secrets (private-key blocks, AWS / Google /
+GitHub / Slack / Stripe keys) and verbose error / stack-trace disclosure. The
+matched secret is redacted in the finding.
+.TP
+.BR \-\-components ", " \-\-outdated
+Vulnerable / outdated component detection (OWASP A06). Passive: fingerprints
+front-end libraries (jQuery, Bootstrap, Lodash, AngularJS, Handlebars) in
+response bodies and flags versions below a known-safe release, each tied to a
+representative advisory.
+.TP
+.B \-\-sri
+Subresource Integrity audit (OWASP A08, CWE-353). Passive: flags cross-origin
+.B <script>
+and
+.B <link rel=stylesheet>
+resources that load without an
+.B integrity
+attribute. Same-origin and integrity-protected resources are ignored.
+.SH OPTIONS
+.SS Core features
+.TP
+.B \-t, \-\-target \fIURL\fR
+Target URL. Required. Example:
+.IR https://example.com/page.php?id=1 .
+.TP
+.BR \-\-all ", " \-\-owasp
+Run the full OWASP sweep: every active detection class plus the passive audits
+(security headers, JWT, secrets) in a single invocation. Out-of-band checks
+(blind XSS/SSRF, OOB SQLi) and data-extraction modes are not included.
+.TP
+.B \-\-mcp
+Run as a Model Context Protocol server over stdio (newline-delimited JSON-RPC),
+exposing an
+.B anvil_scan
+tool so AI agents can drive the scanner. Ignores
+.BR \-\-target ;
+stdout carries only protocol messages.
+.TP
+.B \-\-fingerprint
+Fingerprint server, operating system, and framework.
+.TP
+.B \-\-crawl
+Crawl the application and discover parameters.
+.TP
+.B \-\-js\-crawl
+Render JavaScript with headless Chrome while crawling to find SPA routes,
+forms, and XHR/fetch APIs a static crawl misses.
+.TP
+.BR \-\-sqli ", " \-\-nosqli ", " \-\-xss ", " \-\-ssrf ", " \-\-cmdi ", " \-\-path\-traversal ", " \-\-ssti ", " \-\-xxe ", " \-\-open\-redirect ", " \-\-cors ", " \-\-crlf ", " \-\-security\-headers ", " \-\-jwt ", " \-\-secrets ", " \-\-components ", " \-\-sri
+Enable an individual detection class (see
+.BR "DETECTION CLASSES" ).
+.SS XSS detection
+.TP
+.B \-\-xss\-all
+Enable all XSS types (reflected, stored, DOM, blind).
+.TP
+.B \-\-xss\-stored
+Stored / persistent XSS.
+.TP
+.B \-\-xss\-dom
+DOM-based XSS (client-side analysis).
+.TP
+.B \-\-xss\-blind
+Blind XSS using out-of-band callbacks.
+.TP
+.B \-\-callback \fIDOMAIN\fR
+Callback domain for blind XSS. Requires
+.BR \-\-xss\-blind .
+.TP
+.B \-\-max\-payloads \fIN\fR
+Maximum payloads per context (default: 20).
+.TP
+.B \-\-xss\-context \fICONTEXT\fR
+Target context: html, attribute, js_string, js_code, url, polyglot.
+.SS SSRF detection
+.TP
+.B \-\-ssrf\-all
+Enable all SSRF types (internal, metadata, schemes).
+.TP
+.B \-\-ssrf\-internal
+Test internal ranges (RFC1918, loopback, link-local).
+.TP
+.B \-\-ssrf\-metadata
+Test cloud metadata endpoints (AWS, GCP, Azure).
+.TP
+.B \-\-ssrf\-schemes
+Test non-HTTP schemes (file, gopher, ftp, dict).
+.TP
+.B \-\-ssrf\-callback \fIDOMAIN\fR
+Callback domain for blind SSRF.
+.TP
+.B \-\-ssrf\-max\-payloads \fIN\fR
+Maximum payloads per parameter (default: 20).
+.SS SQL injection detection
+.TP
+.B \-\-sqli\-all
+Enable all SQLi techniques.
+.TP
+.B \-\-time\-sqli
+Time-based (blind) SQLi.
+.TP
+.B \-\-stacked
+Stacked-query SQLi.
+.TP
+.B \-\-oob
+Out-of-band SQLi.
+.TP
+.B \-\-oob\-callback \fIDOMAIN\fR
+Callback domain for OOB detection.
+.TP
+.B \-\-second\-order
+Second-order SQLi.
+.TP
+.B \-\-technique \fIBEUTS\fR
+Techniques to use: B=Boolean, E=Error, U=Union, T=Time, S=Stacked
+(default: BEUTS).
+.SS Enumeration (post-exploitation, authorized use only)
+.TP
+.BR \-\-dbs ", " \-\-tables ", " \-\-columns ", " \-\-schema
+Enumerate databases, tables, columns, or the full schema.
+.TP
+.BR \-\-count ", " \-\-dump ", " \-\-dump\-all
+Count rows; dump a table; dump all tables. See
+.B RULES OF ENGAGEMENT.
+.TP
+.B \-D, \-\-database \fINAME\fR ; \-T, \-\-table \fINAME\fR ; \-C, \-\-col \fILIST\fR
+Scope enumeration to a database, table, or column list.
+.TP
+.B \-\-start \fIN\fR ; \-\-stop \fIN\fR
+First and last row to retrieve.
+.SS Database / user info
+.TP
+.BR \-\-banner ", " \-\-current\-user ", " \-\-current\-db ", " \-\-hostname ", " \-\-is\-dba
+Retrieve DBMS banner, current user, current database, hostname, or DBA status.
+.TP
+.BR \-\-users ", " \-\-passwords ", " \-\-privileges ", " \-\-roles
+Enumerate DBMS users, password hashes, privileges, or roles.
+.TP
+.BR \-\-crack " " \-\-wordlist \fIFILE\fR
+Crack retrieved hashes with a dictionary (built-in list if no wordlist given).
+.SS Authentication
+.TP
+.B \-\-cookie \fISTRING\fR
+Cookie string for authenticated scanning.
+.TP
+.B \-H, \-\-header \fIHEADER\fR
+Extra HTTP header; repeatable.
+.SS Injection point
+.TP
+.B \-p, \-\-param \fINAME\fR
+Parameter to test directly (skips discovery).
+.TP
+.B \-\-data \fIDATA\fR
+POST body to test.
+.TP
+.B \-\-method \fIMETHOD\fR
+HTTP method, GET or POST (default: GET).
+.TP
+.B \-\-trigger\-url \fIURL\fR
+Trigger URL for second-order SQLi.
+.TP
+.BR \-\-extra\-data ", " \-\-prefix ", " \-\-suffix
+Extra POST data, and a prefix/suffix wrapped around each payload.
+.SS Tuning
+.TP
+.B \-\-threshold \fIFLOAT\fR
+Detection confidence threshold, 0.0\(en1.0 (default: 0.5).
+.TP
+.B \-\-risk \fIN\fR
+Risk level: 1=safe, 2=moderate, 3=aggressive (default: 1).
+.TP
+.B \-\-level \fIN\fR
+Test level: 1=basic, 2=extended, 3=comprehensive (default: 1).
+.SS Performance
+.TP
+.B \-\-rate \fIN\fR
+Maximum HTTP requests per second (default: 5). This is a global politeness
+limit; lower it for fragile targets, raise it for lab benchmarks.
+.TP
+.B \-\-depth \fIN\fR
+Crawl depth limit (default: 2).
+.TP
+.BR \-\-time\-samples ", " \-\-time\-delay
+Time-based SQLi sampling count (default: 6) and delay in seconds (default: 2).
+.TP
+.B \-\-threads \fIN\fR
+Threads for data extraction (default: 1).
+.SS Output
+.TP
+.B \-o, \-\-output \fIFILE\fR
+Write the report to a file.
+.TP
+.B \-\-format \fIFORMAT\fR
+Report format: text, json, csv (default: text).
+.TP
+.B \-\-fail\-on \fISEVERITY\fR
+CI / agent gating. Exit with code 2 if any finding at or above \fISEVERITY\fR
+(info, low, medium, high, critical) is reported; otherwise exit 0. Without this
+flag the exit code is always 0 on success. See \fBEXIT STATUS\fR.
+.TP
+.BR \-q ", " \-\-quiet " / " \-v ", " \-\-verbose " / " \-\-no\-banner
+Minimal output / debug output / suppress the startup banner.
+.SH EXAMPLES
+.TP
+Targeted SQL injection on one parameter:
+.B anvil \-t 'http://host/page?id=1' \-p id \-\-sqli
+.TP
+NoSQL (MongoDB operator) injection:
+.B anvil \-t 'http://host/find?q=cat' \-p q \-\-nosqli
+.TP
+Full XSS sweep with all modes:
+.B anvil \-t 'http://host/search?q=t' \-p q \-\-xss \-\-xss\-all
+.TP
+SSRF against a URL parameter:
+.B anvil \-t 'http://host/fetch?url=x' \-p url \-\-ssrf
+.TP
+OS command injection:
+.B anvil \-t 'http://host/ping?host=x' \-p host \-\-cmdi
+.TP
+Path traversal / LFI:
+.B anvil \-t 'http://host/view?file=a' \-p file \-\-path\-traversal
+.TP
+XML External Entity (endpoint-level):
+.B anvil \-t 'http://host/api/xml' \-\-xxe
+.TP
+Server-side template injection:
+.B anvil \-t 'http://host/tpl?name=x' \-p name \-\-ssti
+.TP
+Open redirect:
+.B anvil \-t 'http://host/go?next=/' \-p next \-\-open\-redirect
+.TP
+CORS misconfiguration (endpoint-level):
+.B anvil \-t 'http://host/api/me' \-\-cors
+.TP
+CRLF / header injection:
+.B anvil \-t 'http://host/set?lang=en' \-p lang \-\-crlf
+.TP
+Passive security-header audit:
+.B anvil \-t 'https://host/' \-\-security\-headers
+.TP
+JWT weakness analysis (token from a cookie):
+.B anvil \-t 'https://host/api' \-\-cookie 'session=eyJ...' \-\-jwt
+.TP
+Sensitive-data / secret exposure:
+.B anvil \-t 'https://host/config.js' \-\-secrets
+.TP
+Outdated / vulnerable components:
+.B anvil \-t 'https://host/' \-\-components
+.TP
+Subresource Integrity audit:
+.B anvil \-t 'https://host/' \-\-sri
+.TP
+Crawl the whole app and write a JSON report:
+.B anvil \-t http://host \-\-all \-\-crawl \-o report.json \-\-format json
+.TP
+CI / agent gating (exit 2 on any High+ finding):
+.B anvil \-t http://host \-\-owasp \-\-fail\-on high \-\-format json
+.TP
+Run as an MCP server for AI agents:
+.B anvil \-\-mcp
+.SH OUTPUT
+Findings are printed to standard output and, with
+.BR \-o ,
+written to a file in the format selected by
+.BR \-\-format .
+The
+.B json
+and
+.B csv
+formats are stable and intended for CI pipelines and downstream tooling.
+.SH EXIT STATUS
+.TP
+.B 0
+Completed successfully with no findings at or above the
+.B \-\-fail\-on
+threshold (or no threshold was set).
+.TP
+.B 1
+A fatal error occurred (invalid arguments, target unreachable, or an
+out-of-scope request was blocked).
+.TP
+.B 2
+Completed successfully, but one or more findings met or exceeded the
+.B \-\-fail\-on
+severity threshold.
+.SH RULES OF ENGAGEMENT
+ANVIL is for authorized security testing only. Only scan systems you own or
+have explicit written permission to test. Enumeration and dump options
+(\fB\-\-dump\fR, \fB\-\-dump\-all\fR) retrieve real data and must never be run
+against production systems without authorization. The default
+.B \-\-rate 5
+and
+.B \-\-risk 1
+settings are conservative; raising them increases load on the target.
+.SH AUTHOR
+Siddhant Bhattarai.
+.SH SEE ALSO
+Project documentation and source: https://github.com/siddhantbhattarai/anvil
+.PP
+sqlmap(1), nikto(1), nuclei(1)

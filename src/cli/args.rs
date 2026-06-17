@@ -4,24 +4,65 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "anvil",
-    version = "0.1.0",
+    version = "0.6.0",
     author = "Siddhant Bhattarai",
-    about = "Enterprise-grade vulnerability scanner with advanced SQL injection, XSS, and SSRF detection",
-    long_about = None,
-    after_help = "EXAMPLES:\n  anvil -t http://target.com/page?id=1 -p id --sqli\n  anvil -t http://target.com/search?q=test -p q --xss\n  anvil -t http://target.com --all -o report.json\n\nMore info: https://github.com/siddhantbhattarai/anvil"
+    about = "ANVIL — adversarial web vulnerability scanner: 11 active classes (SQLi · NoSQLi · XSS · SSRF · CmdI · PathTrav · SSTI · XXE · OpenRedirect · CORS · CRLF) + passive audits (headers · JWT · secrets · outdated-components · SRI)",
+    long_about = "ANVIL is an enterprise-grade, evidence-driven web application security scanner.\n\
+                  It detects and safely proves eleven active vulnerability classes — SQL injection\n\
+                  (CWE-89), NoSQL injection (CWE-943), cross-site scripting (CWE-79), server-side\n\
+                  request forgery (CWE-918), OS command injection (CWE-78), path traversal / LFI\n\
+                  (CWE-22), server-side template injection (CWE-1336), XML external entity\n\
+                  (CWE-611), open redirect (CWE-601), CORS misconfiguration (CWE-942), and CRLF /\n\
+                  HTTP header injection (CWE-113) — plus passive analyzers: JWT weakness analysis\n\
+                  (CWE-347), a security-header & cookie audit (OWASP A05), sensitive-data /\n\
+                  secret exposure (OWASP A02), outdated-component detection (OWASP A06), and a\n\
+                  Subresource-Integrity audit (OWASP A08). Low false positives; results are\n\
+                  machine-readable (text, JSON, CSV) for triage and CI gating.\n\n\
+                  Run one targeted check with -t/--param plus a class flag (e.g. --sqli), or sweep\n\
+                  every class + passive audit in one command with --all (alias --owasp). Options\n\
+                  are grouped by area below.",
+    after_help = "EXAMPLES:\n  \
+                  # Targeted single-class checks\n  \
+                  anvil -t 'http://host/page?id=1'     -p id   --sqli\n  \
+                  anvil -t 'http://host/find?q=cat'    -p q    --nosqli\n  \
+                  anvil -t 'http://host/search?q=t'    -p q    --xss --xss-all\n  \
+                  anvil -t 'http://host/fetch?url=x'   -p url  --ssrf\n  \
+                  anvil -t 'http://host/ping?host=x'   -p host --cmdi\n  \
+                  anvil -t 'http://host/view?file=a'   -p file --path-traversal\n  \
+                  anvil -t 'http://host/tpl?name=x'    -p name --ssti\n  \
+                  anvil -t 'http://host/api/xml'               --xxe\n  \
+                  anvil -t 'http://host/go?next=/'     -p next --open-redirect\n  \
+                  anvil -t 'http://host/api/me'                --cors\n  \
+                  anvil -t 'http://host/set?lang=en'   -p lang --crlf\n  \
+                  anvil -t 'https://host/'                     --security-headers\n  \
+                  anvil -t 'https://host/api' --cookie 'session=eyJ...' --jwt\n  \
+                  anvil -t 'https://host/config.js'            --secrets\n  \
+                  anvil -t 'https://host/'                     --components\n  \
+                  anvil -t 'https://host/'                     --sri\n\n  \
+                  # Full sweep with crawl + JSON report\n  \
+                  anvil -t http://host --all --crawl -o report.json --format json\n\n  \
+                  # CI / agent gating: exit 2 if anything High or worse is found\n  \
+                  anvil -t http://host --owasp --fail-on high --format json\n\n  \
+                  # MCP server mode for AI agents (JSON-RPC over stdio)\n  \
+                  anvil --mcp\n\n\
+                  DOCS:  man anvil   ·   https://github.com/siddhantbhattarai/anvil",
 )]
 pub struct Cli {
     /// Target URL (e.g. https://example.com/page.php?id=1)
-    #[arg(short, long, required = true)]
-    pub target: String,
+    #[arg(short, long, required_unless_present = "mcp")]
+    pub target: Option<String>,
 
     // ═══════════════════════════════════════════════════════════════════
     // CORE FEATURES
     // ═══════════════════════════════════════════════════════════════════
 
-    /// Enable ALL vulnerability scans (SQLi + XSS + others)
-    #[arg(long, help_heading = "CORE FEATURES")]
+    /// Run the full OWASP sweep — every detection class + passive audit in one go
+    #[arg(long, visible_alias = "owasp", help_heading = "CORE FEATURES")]
     pub all: bool,
+
+    /// Run as an MCP server over stdio (for AI agents); ignores --target
+    #[arg(long, help_heading = "CORE FEATURES")]
+    pub mcp: bool,
 
     /// Enable fingerprinting (server, OS, framework detection)
     #[arg(long, help_heading = "CORE FEATURES")]
@@ -30,6 +71,10 @@ pub struct Cli {
     /// Enable application crawling & parameter discovery
     #[arg(long, help_heading = "CORE FEATURES")]
     pub crawl: bool,
+
+    /// Render JavaScript (headless Chrome) while crawling — finds SPA routes, forms, and XHR APIs
+    #[arg(long = "js-crawl", help_heading = "CORE FEATURES")]
+    pub js_crawl: bool,
 
     /// Enable SQL Injection scanning (use --sqli for basic, see SQLI DETECTION for advanced)
     #[arg(long, help_heading = "CORE FEATURES")]
@@ -42,6 +87,58 @@ pub struct Cli {
     /// Enable Server-Side Request Forgery scanning
     #[arg(long, help_heading = "CORE FEATURES")]
     pub ssrf: bool,
+
+    /// Enable OS command injection scanning (CWE-78)
+    #[arg(long, help_heading = "CORE FEATURES")]
+    pub cmdi: bool,
+
+    /// Enable path traversal / LFI scanning (CWE-22)
+    #[arg(long = "path-traversal", visible_alias = "lfi", help_heading = "CORE FEATURES")]
+    pub path_traversal: bool,
+
+    /// Enable Server-Side Template Injection scanning (CWE-1336)
+    #[arg(long, help_heading = "CORE FEATURES")]
+    pub ssti: bool,
+
+    /// Enable open redirect scanning (CWE-601)
+    #[arg(long = "open-redirect", visible_alias = "redirect", help_heading = "CORE FEATURES")]
+    pub open_redirect: bool,
+
+    /// Enable CORS misconfiguration scanning (CWE-942)
+    #[arg(long, help_heading = "CORE FEATURES")]
+    pub cors: bool,
+
+    /// Enable CRLF / HTTP header injection scanning (CWE-113)
+    #[arg(long, help_heading = "CORE FEATURES")]
+    pub crlf: bool,
+
+    /// Enable passive security-header & cookie audit (OWASP A05)
+    #[arg(long = "security-headers", visible_alias = "sec-headers", help_heading = "CORE FEATURES")]
+    pub security_headers: bool,
+
+    /// Enable JWT weakness analysis (alg:none, weak secret, no expiry) (CWE-347)
+    #[arg(long, help_heading = "CORE FEATURES")]
+    pub jwt: bool,
+
+    /// Enable sensitive data / secret exposure scanning (OWASP A02)
+    #[arg(long, visible_alias = "data-exposure", help_heading = "CORE FEATURES")]
+    pub secrets: bool,
+
+    /// Enable NoSQL injection scanning (MongoDB operator injection) (CWE-943)
+    #[arg(long, visible_alias = "nosql", help_heading = "CORE FEATURES")]
+    pub nosqli: bool,
+
+    /// Enable XML External Entity (XXE) scanning (CWE-611)
+    #[arg(long, help_heading = "CORE FEATURES")]
+    pub xxe: bool,
+
+    /// Enable outdated / vulnerable component scanning (JS libraries) (OWASP A06)
+    #[arg(long, visible_alias = "outdated", help_heading = "CORE FEATURES")]
+    pub components: bool,
+
+    /// Enable Subresource Integrity (SRI) audit of cross-origin assets (OWASP A08)
+    #[arg(long, help_heading = "CORE FEATURES")]
+    pub sri: bool,
 
     // ═══════════════════════════════════════════════════════════════════
     // XSS DETECTION OPTIONS
@@ -64,15 +161,15 @@ pub struct Cli {
     pub xss_blind: bool,
 
     /// Callback domain for blind XSS (e.g., attacker.com)
-    #[arg(long = "callback", help_heading = "XSS DETECTION", requires = "xss_blind")]
+    #[arg(long = "callback", value_name = "DOMAIN", help_heading = "XSS DETECTION", requires = "xss_blind")]
     pub xss_callback: Option<String>,
 
-    /// Maximum payloads to test per context (default: 20)
-    #[arg(long = "max-payloads", help_heading = "XSS DETECTION", default_value = "20")]
+    /// Maximum payloads to test per context
+    #[arg(long = "max-payloads", value_name = "N", help_heading = "XSS DETECTION", default_value = "20")]
     pub max_payloads: usize,
 
     /// XSS context to target (html, attribute, js_string, js_code, url, polyglot)
-    #[arg(long = "xss-context", help_heading = "XSS DETECTION")]
+    #[arg(long = "xss-context", value_name = "CONTEXT", help_heading = "XSS DETECTION")]
     pub xss_context: Option<String>,
 
     // ═══════════════════════════════════════════════════════════════════
@@ -96,11 +193,11 @@ pub struct Cli {
     pub ssrf_schemes: bool,
 
     /// Callback domain for blind SSRF detection (e.g., attacker.com)
-    #[arg(long = "ssrf-callback", help_heading = "SSRF DETECTION")]
+    #[arg(long = "ssrf-callback", value_name = "DOMAIN", help_heading = "SSRF DETECTION")]
     pub ssrf_callback: Option<String>,
 
-    /// Maximum payloads to test per parameter for SSRF (default: 20)
-    #[arg(long = "ssrf-max-payloads", help_heading = "SSRF DETECTION", default_value = "20")]
+    /// Maximum payloads to test per parameter for SSRF
+    #[arg(long = "ssrf-max-payloads", value_name = "N", help_heading = "SSRF DETECTION", default_value = "20")]
     pub ssrf_max_payloads: usize,
 
     // ═══════════════════════════════════════════════════════════════════
@@ -348,20 +445,25 @@ pub struct Cli {
     #[arg(short, long, help_heading = "OUTPUT")]
     pub output: Option<String>,
 
+    /// Exit 2 if any finding at or above this severity is reported, for CI / agent
+    /// gating (info|low|medium|high|critical). Exit 0 = clean, 1 = error.
+    #[arg(long = "fail-on", value_name = "SEVERITY", help_heading = "OUTPUT")]
+    pub fail_on: Option<String>,
+
     // ═══════════════════════════════════════════════════════════════════
     // LEGACY/COMPATIBILITY (like sqlmap)
     // ═══════════════════════════════════════════════════════════════════
 
     /// Enable proof mode (safe metadata extraction only)
-    #[arg(long, help_heading = "LEGACY")]
+    #[arg(long, hide = true, help_heading = "LEGACY")]
     pub proof: bool,
 
     /// Enable exploitation (same as enumeration flags)
-    #[arg(long, help_heading = "LEGACY")]
+    #[arg(long, hide = true, help_heading = "LEGACY")]
     pub exploit: bool,
 
     /// Extract database password hashes (same as --passwords)
-    #[arg(long = "dump-hashes", help_heading = "LEGACY")]
+    #[arg(long = "dump-hashes", hide = true, help_heading = "LEGACY")]
     pub dump_hashes: bool,
 }
 

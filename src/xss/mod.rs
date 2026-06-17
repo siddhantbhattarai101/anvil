@@ -9,6 +9,7 @@ pub mod engine;
 pub mod stored;
 pub mod dom;
 pub mod blind;
+pub mod headless;
 
 // Re-export types
 pub use context::{XssContext, ContextAnalysis, QuoteType};

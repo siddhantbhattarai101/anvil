@@ -66,6 +66,10 @@ pub struct SsrfConfig {
     
     /// Maximum payloads to test per parameter
     pub max_payloads: usize,
+
+    /// When set, payloads are injected into this POST body (form or JSON,
+    /// auto-detected) instead of the URL query string.
+    pub post_body: Option<String>,
 }
 
 impl Default for SsrfConfig {
@@ -79,6 +83,7 @@ impl Default for SsrfConfig {
             internal_timeout: 2000,
             confidence_threshold: 0.7,
             max_payloads: 20,
+            post_body: None,
         }
     }
 }

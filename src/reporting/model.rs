@@ -163,6 +163,31 @@ pub enum Severity {
     Critical,
 }
 
+impl Severity {
+    /// Ordinal rank for threshold comparisons (Info=0 … Critical=4).
+    pub fn rank(&self) -> u8 {
+        match self {
+            Severity::Info => 0,
+            Severity::Low => 1,
+            Severity::Medium => 2,
+            Severity::High => 3,
+            Severity::Critical => 4,
+        }
+    }
+
+    /// Parse a severity name (case-insensitive). Accepts the five levels.
+    pub fn parse(s: &str) -> Option<Severity> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "info" | "informational" => Some(Severity::Info),
+            "low" => Some(Severity::Low),
+            "medium" | "med" => Some(Severity::Medium),
+            "high" => Some(Severity::High),
+            "critical" | "crit" => Some(Severity::Critical),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for Severity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

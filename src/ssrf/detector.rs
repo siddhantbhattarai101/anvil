@@ -6,6 +6,9 @@ use crate::ssrf::evidence::{Evidence, EvidenceType, SsrfClassification, SsrfResu
 use crate::ssrf::oob::{generate_identifier, OobCallbackGenerator, OobCallbackListener};
 use crate::ssrf::probes::{SsrfProbe, SsrfProbeGenerator, SsrfProbeType};
 use crate::ssrf::SsrfConfig;
+use crate::sqli::request::InjectionPoint;
+use crate::validation::baseline::Baseline;
+use crate::validation::diff::diff;
 use reqwest::Method;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -47,45 +50,49 @@ impl SsrfDetector {
     ) -> anyhow::Result<Option<SsrfResult>> {
         tracing::debug!("Testing parameter '{}' for SSRF", param_name);
 
-        // Phase 1: Reachability testing - confirm server makes outbound requests
-        if !self.test_reachability(client, url, param_name).await? {
+        // Phase 1: Reachability testing - confirm server makes outbound requests.
+        // If OOB is configured we still proceed even when response-based
+        // reachability fails, because blind SSRF (no response evidence) can only
+        // be confirmed out-of-band in Phase 3.
+        let reachable = self.test_reachability(client, url, param_name).await?;
+        if !reachable && self.oob_generator.is_none() {
             tracing::debug!("No outbound request behavior detected for '{}'", param_name);
             return Ok(None);
         }
-
-        tracing::debug!("Outbound request behavior confirmed for '{}'", param_name);
-
-        // Phase 2: Generate and test probes
-        let mut probes = self.probe_generator.generate_all_probes(original_value);
-
-        // Sort by priority
-        probes.sort_by_key(|p| p.priority());
-
-        // Limit number of probes
-        if probes.len() > self.config.max_payloads {
-            probes.truncate(self.config.max_payloads);
+        if reachable {
+            tracing::debug!("Outbound request behavior confirmed for '{}'", param_name);
         }
 
         let mut best_result: Option<SsrfResult> = None;
 
-        for probe in &probes {
-            if let Some(result) = self.test_probe(client, url, param_name, probe).await? {
-                // Update best result if this is better
-                if let Some(ref current_best) = best_result {
-                    if result.classification > current_best.classification
-                        || (result.classification == current_best.classification
-                            && result.confidence > current_best.confidence)
-                    {
+        // Phase 2: response-based probes — only meaningful when the parameter
+        // actually drives a fetch. Skipping these when not reachable is what
+        // keeps reflection-only endpoints (which echo probes back) from being
+        // flagged; for those, OOB (Phase 3) is the only valid signal.
+        if reachable {
+            let mut probes = self.probe_generator.generate_all_probes(original_value);
+            probes.sort_by_key(|p| p.priority());
+            if probes.len() > self.config.max_payloads {
+                probes.truncate(self.config.max_payloads);
+            }
+
+            for probe in &probes {
+                if let Some(result) = self.test_probe(client, url, param_name, probe).await? {
+                    if let Some(ref current_best) = best_result {
+                        if result.classification > current_best.classification
+                            || (result.classification == current_best.classification
+                                && result.confidence > current_best.confidence)
+                        {
+                            best_result = Some(result);
+                        }
+                    } else {
                         best_result = Some(result);
                     }
-                } else {
-                    best_result = Some(result);
-                }
 
-                // If we found confirmed SSRF, we can stop
-                if let Some(ref result) = best_result {
-                    if result.classification == SsrfClassification::ConfirmedNetworkSsrf {
-                        break;
+                    if let Some(ref result) = best_result {
+                        if result.classification == SsrfClassification::ConfirmedNetworkSsrf {
+                            break;
+                        }
                     }
                 }
             }
@@ -108,86 +115,105 @@ impl SsrfDetector {
         Ok(None)
     }
 
-    /// Phase 1: Test if server makes outbound requests at all
+    /// Build a request that injects `payload` at the configured location: the
+    /// POST body when `config.post_body` is set (form or JSON auto-detected),
+    /// otherwise the URL query string. `extra_headers` carries probe-specific
+    /// headers (e.g. cloud-metadata headers). Auth cookies/headers travel via
+    /// the HTTP client, so they are not duplicated here.
+    fn build_injected(
+        &self,
+        url: &Url,
+        param: &str,
+        payload: &str,
+        extra_headers: &[(String, String)],
+    ) -> HttpRequest {
+        let point = match &self.config.post_body {
+            Some(body) => InjectionPoint::from_context(
+                Method::POST,
+                url.clone(),
+                param,
+                Some(body.clone()),
+                Vec::new(),
+                extra_headers.to_vec(),
+            ),
+            None => {
+                let mut p = InjectionPoint::query(url.clone(), param);
+                p.headers = extra_headers.to_vec();
+                p
+            }
+        };
+        point.build_request(payload)
+    }
+
+    /// Execute a request injecting `value` at the configured location.
+    async fn request_with_param(
+        &self,
+        client: &HttpClient,
+        url: &Url,
+        param_name: &str,
+        value: &str,
+    ) -> anyhow::Result<crate::http::response::HttpResponse> {
+        let request = self.build_injected(url, param_name, value, &[]);
+        client.execute(request).await
+    }
+
+    /// Phase 1: Test whether the parameter actually influences server-side
+    /// fetch/file behaviour. Evidence-based: we establish a baseline with a
+    /// benign inert value, then require either (a) outbound-fetch indicators or
+    /// (b) a material divergence from baseline for a fetch-like test value.
+    /// Returns `false` when there is no evidence the parameter drives a request
+    /// — previously this returned `true` unconditionally, marking every
+    /// parameter reachable and producing false positives downstream.
     async fn test_reachability(
         &self,
         client: &HttpClient,
         url: &Url,
         param_name: &str,
     ) -> anyhow::Result<bool> {
-        // First, test if parameter influences file/resource access
-        // This is more permissive for file inclusion vulnerabilities
-        
-        // Test 1: Try a simple file path change
-        let test_values = vec![
-            "test.txt",           // Simple file
-            "../../test",         // Path traversal indicator
-            "file:///etc/hosts",  // File scheme
+        // Baseline: an inert, non-fetching value for the parameter.
+        let baseline = match self
+            .request_with_param(client, url, param_name, "anvilbaselineprobe")
+            .await
+        {
+            Ok(resp) => Baseline::from_response(&resp),
+            Err(_) => return Ok(false),
+        };
+
+        // Fetch-like / file-like test values. If the parameter drives an
+        // outbound request or a local read, the response should diverge from
+        // baseline or expose fetched content.
+        let test_values = [
+            "http://example.com",
+            "https://example.com",
+            "file:///etc/hosts",
+            "test.txt",
         ];
 
         for test_val in test_values {
-            let mut test_url_obj = url.clone();
+            let response = match self
+                .request_with_param(client, url, param_name, test_val)
+                .await
             {
-                let mut pairs = test_url_obj.query_pairs_mut();
-                pairs.clear();
-                for (k, v) in url.query_pairs() {
-                    if k == param_name {
-                        pairs.append_pair(&k, test_val);
-                    } else {
-                        pairs.append_pair(&k, &v);
-                    }
-                }
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            // Strong signal: server fetched and reflected external content.
+            if self.has_outbound_indicators(&response.body_text()) {
+                return Ok(true);
             }
 
-            let request = HttpRequest::new(Method::GET, test_url_obj);
-            match client.execute(request).await {
-                Ok(response) => {
-                    let body = response.body_text();
-                    // Check if response changed significantly
-                    if body.len() > 100 {
-                        // Response exists, parameter likely influences server behavior
-                        return Ok(true);
-                    }
-                }
-                Err(_) => continue,
+            // Behavioural signal: the response materially differs from baseline
+            // (status flip or a meaningful body-length change), indicating the
+            // parameter changes server-side behaviour.
+            let d = diff(&baseline, &response);
+            if d.status_changed || d.body_len_delta.abs() > 100 {
+                return Ok(true);
             }
         }
 
-        // Test 2: Try external URL (traditional SSRF)
-        let test_urls = vec![
-            "http://example.com",
-            "https://example.com",
-        ];
-
-        for test_url in test_urls {
-            let mut test_url_obj = url.clone();
-            {
-                let mut pairs = test_url_obj.query_pairs_mut();
-                pairs.clear();
-                for (k, v) in url.query_pairs() {
-                    if k == param_name {
-                        pairs.append_pair(&k, test_url);
-                    } else {
-                        pairs.append_pair(&k, &v);
-                    }
-                }
-            }
-
-            let request = HttpRequest::new(Method::GET, test_url_obj);
-            match client.execute(request).await {
-                Ok(response) => {
-                    // Check for indicators that server made an outbound request
-                    if self.has_outbound_indicators(&response.body_text()) {
-                        return Ok(true);
-                    }
-                }
-                Err(_) => continue,
-            }
-        }
-
-        // If we got here, assume parameter might still be testable
-        // (permissive approach for file inclusion)
-        Ok(true)
+        // No evidence the parameter influences outbound/file behaviour.
+        Ok(false)
     }
 
     /// Test a specific SSRF probe
@@ -200,23 +226,14 @@ impl SsrfDetector {
     ) -> anyhow::Result<Option<SsrfResult>> {
         tracing::debug!("Testing probe: {} ({})", probe.description, probe.payload);
 
-        // Build test URL
-        let mut test_url = url.clone();
-        {
-            let mut pairs = test_url.query_pairs_mut();
-            pairs.clear();
-            for (k, v) in url.query_pairs() {
-                if k == param_name {
-                    pairs.append_pair(&k, &probe.payload);
-                } else {
-                    pairs.append_pair(&k, &v);
-                }
-            }
-        }
+        // Build the request, injecting the probe payload at the configured
+        // location (query or POST body) and attaching any provider-required
+        // headers (e.g. GCP Metadata-Flavor, Azure Metadata: true — without
+        // which those metadata endpoints return 403).
+        let request = self.build_injected(url, param_name, &probe.payload, &probe.headers);
 
         // Measure timing
         let start = Instant::now();
-        let request = HttpRequest::new(Method::GET, test_url.clone());
         let response = match client.execute(request).await {
             Ok(r) => r,
             Err(e) => {
@@ -489,25 +506,16 @@ impl SsrfDetector {
         tracing::debug!("Testing blind SSRF with OOB callbacks");
 
         let identifier = generate_identifier(&url.to_string(), param_name);
-        let callback_url = generator.generate_callback_url(&identifier);
+        // Path-based callback works on a directly-reachable IP:port (the built-in
+        // listener); the sub-domain form covers wildcard-DNS callback servers.
+        let callback_url = generator.generate_http_callback(&identifier);
+        let subdomain_callback = generator.generate_callback_url(&identifier);
 
-        // Inject callback URL
-        let mut test_url = url.clone();
-        {
-            let mut pairs = test_url.query_pairs_mut();
-            pairs.clear();
-            for (k, v) in url.query_pairs() {
-                if k == param_name {
-                    pairs.append_pair(&k, &callback_url);
-                } else {
-                    pairs.append_pair(&k, &v);
-                }
-            }
+        // Inject both callback forms at the configured location (query or body).
+        for cb in [&callback_url, &subdomain_callback] {
+            let request = self.build_injected(url, param_name, cb, &[]);
+            let _ = client.execute(request).await;
         }
-
-        // Send request
-        let request = HttpRequest::new(Method::GET, test_url);
-        let _ = client.execute(request).await;
 
         // Wait for callback
         if listener.wait_for_callback(&identifier, 5).await {
@@ -688,6 +696,47 @@ impl SsrfDetector {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_injected_uses_query_by_default() {
+        let det = SsrfDetector::new(SsrfConfig::default());
+        let url = Url::parse("http://t/a?url=x&q=1").unwrap();
+        let req = det.build_injected(&url, "url", "http://169.254.169.254/", &[]);
+        assert_eq!(req.method, Method::GET);
+        assert!(req.url.query().unwrap().contains("url=http"));
+        assert!(req.url.query().unwrap().contains("q=1"));
+        assert!(req.body.is_none());
+    }
+
+    #[test]
+    fn build_injected_uses_post_body_when_configured() {
+        let mut cfg = SsrfConfig::default();
+        cfg.post_body = Some("url=orig&x=1".to_string());
+        let det = SsrfDetector::new(cfg);
+        let url = Url::parse("http://t/a").unwrap();
+        let req = det.build_injected(&url, "url", "http://169.254.169.254/", &[]);
+        assert_eq!(req.method, Method::POST);
+        let body = String::from_utf8_lossy(req.body.as_deref().unwrap_or_default()).to_string();
+        assert!(body.contains("url=http")); // injected
+        assert!(body.contains("x=1")); // other field preserved
+    }
+
+    #[test]
+    fn build_injected_attaches_extra_headers() {
+        let det = SsrfDetector::new(SsrfConfig::default());
+        let url = Url::parse("http://t/a?url=x").unwrap();
+        let headers = vec![("Metadata-Flavor".to_string(), "Google".to_string())];
+        let req = det.build_injected(&url, "url", "http://metadata.google/", &headers);
+        assert_eq!(
+            req.headers.get("metadata-flavor").and_then(|v| v.to_str().ok()),
+            Some("Google")
+        );
     }
 }
 

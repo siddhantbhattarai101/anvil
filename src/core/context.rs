@@ -4,6 +4,7 @@ use crate::cli::args::Cli;
 use crate::core::capability::Capability;
 use crate::core::profile::ScanProfile;
 use crate::core::scope::Scope;
+use crate::reporting::model::Severity;
 use crate::sqli::SqliConfig;
 use crate::ssrf::SsrfConfig;
 use std::collections::HashMap;
@@ -50,6 +51,8 @@ pub struct Context {
     pub target: String,
     pub rate_limit: u32,
     pub crawl_depth: u32,
+    /// Render JavaScript during crawl (headless Chrome) for SPA discovery.
+    pub js_crawl: bool,
     pub quiet: bool,
     pub verbose: bool,
     pub scope: Scope,
@@ -79,11 +82,16 @@ pub struct Context {
     // Injection customization
     pub prefix: Option<String>,
     pub suffix: Option<String>,
+    /// Callback domain for blind XSS (must route to the OOB listener).
+    pub xss_callback: Option<String>,
+    /// CI/agent gating: exit 2 if any finding at or above this severity exists.
+    pub fail_on: Option<Severity>,
 }
 
 impl Context {
     pub fn from_cli(cli: Cli) -> anyhow::Result<Self> {
-        let scope = Scope::new(&cli.target)?;
+        let target = cli.target.clone().unwrap_or_default();
+        let scope = Scope::new(&target)?;
 
         // Build scan profile from CLI flags
         let has_enumeration = cli.has_enumeration();
@@ -107,6 +115,19 @@ impl Context {
                 || cli.xss_all
                 || cli.ssrf
                 || cli.ssrf_all
+                || cli.cmdi
+                || cli.path_traversal
+                || cli.ssti
+                || cli.open_redirect
+                || cli.cors
+                || cli.crlf
+                || cli.security_headers
+                || cli.jwt
+                || cli.secrets
+                || cli.nosqli
+                || cli.xxe
+                || cli.components
+                || cli.sri
                 || has_enumeration;
 
             // Enable fingerprint and crawl by default if no specific module requested
@@ -181,6 +202,45 @@ impl Context {
             if cli.ssrf || cli.ssrf_all {
                 profile.enable(Capability::Ssrf);
             }
+            if cli.cmdi {
+                profile.enable(Capability::Cmdi);
+            }
+            if cli.path_traversal {
+                profile.enable(Capability::PathTraversal);
+            }
+            if cli.ssti {
+                profile.enable(Capability::Ssti);
+            }
+            if cli.open_redirect {
+                profile.enable(Capability::OpenRedirect);
+            }
+            if cli.cors {
+                profile.enable(Capability::Cors);
+            }
+            if cli.crlf {
+                profile.enable(Capability::Crlf);
+            }
+            if cli.security_headers {
+                profile.enable(Capability::SecurityHeaders);
+            }
+            if cli.jwt {
+                profile.enable(Capability::Jwt);
+            }
+            if cli.secrets {
+                profile.enable(Capability::Secrets);
+            }
+            if cli.nosqli {
+                profile.enable(Capability::NoSqli);
+            }
+            if cli.xxe {
+                profile.enable(Capability::Xxe);
+            }
+            if cli.components {
+                profile.enable(Capability::Components);
+            }
+            if cli.sri {
+                profile.enable(Capability::Sri);
+            }
 
             profile
         };
@@ -206,6 +266,13 @@ impl Context {
             internal_timeout: 2000,
             confidence_threshold: cli.threshold,
             max_payloads: cli.ssrf_max_payloads,
+            // When testing a POST request with a body, inject SSRF payloads into
+            // the body rather than the query string.
+            post_body: if cli.method.eq_ignore_ascii_case("POST") {
+                cli.data.clone()
+            } else {
+                None
+            },
         };
 
         // Parse custom headers
@@ -241,10 +308,21 @@ impl Context {
             roles: cli.roles,
         };
 
+        // Parse the CI/agent gating threshold, erroring (exit 1) on a bad value.
+        let fail_on = match &cli.fail_on {
+            Some(s) => Some(Severity::parse(s).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "invalid --fail-on value '{s}' (expected info|low|medium|high|critical)"
+                )
+            })?),
+            None => None,
+        };
+
         Ok(Self {
-            target: cli.target,
+            target,
             rate_limit: cli.rate,
             crawl_depth: cli.depth,
+            js_crawl: cli.js_crawl,
             quiet: cli.quiet,
             verbose: cli.verbose,
             scope,
@@ -268,6 +346,8 @@ impl Context {
             threads: cli.threads,
             prefix: cli.prefix,
             suffix: cli.suffix,
+            xss_callback: cli.xss_callback,
+            fail_on,
         })
     }
 }

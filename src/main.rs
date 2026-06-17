@@ -1,14 +1,28 @@
 mod cli;
+mod cmdi;
+mod components;
 mod core;
+mod cors;
+mod crlf;
 mod http;
+mod jwt;
+mod mcp;
+mod nosqli;
+mod openredirect;
+mod pathtrav;
 mod payload;
 mod reporting;
 mod scanner;
+mod secheaders;
+mod secrets;
 mod sqli;
+mod sri;
 mod ssrf;
+mod ssti;
 mod validation;
 // TODO: Fix type errors in xss modules
 mod xss;
+mod xxe;
 
 use cli::args::Cli;
 use core::context::Context;
@@ -29,7 +43,7 @@ const BANNER: &str = r#"
  ║    Enterprise-grade Adversarial Security Testing Framework         ║
  ║                                                                    ║
  ║    Author  : Siddhant Bhattarai                                    ║
- ║    Version : 0.1.0                                                 ║
+ ║    Version : 0.6.0                                                 ║
  ║    License : Apache-2.0                                            ║
  ║                                                                    ║
  ╚════════════════════════════════════════════════════════════════════╝
@@ -69,6 +83,13 @@ async fn main() -> anyhow::Result<()> {
     // Normal parsing for actual runs
     let cli = Cli::parse();
 
+    // MCP server mode: stdout is reserved for the JSON-RPC protocol, so emit no
+    // banner and no tracing to stdout — hand control straight to the server.
+    if cli.mcp {
+        mcp::serve().await?;
+        return Ok(());
+    }
+
     // Show banner for normal runs unless --no-banner or --quiet
     if !cli.no_banner && !cli.quiet {
         print_banner();
@@ -78,7 +99,8 @@ async fn main() -> anyhow::Result<()> {
 
     let ctx = Context::from_cli(cli)?;
     let engine = Engine::new(ctx)?;
-    engine.run().await?;
+    let exit_code = engine.run().await?;
 
-    Ok(())
+    // Deterministic exit: 0 = clean / no gate, 2 = findings >= --fail-on, 1 = error.
+    std::process::exit(exit_code);
 }

@@ -68,6 +68,23 @@ impl BlindXssEngine {
         Ok(())
     }
     
+    /// Poll the shared OOB interaction log and confirm any blind-XSS probe whose
+    /// correlation ID has been observed in an inbound request (served by the
+    /// built-in OOB listener). Returns the number of newly confirmed findings.
+    pub fn check_received_callbacks(
+        &self,
+        reporter: &mut crate::reporting::reporter::Reporter,
+    ) -> usize {
+        let mut confirmed = 0;
+        for id in self.probes.keys() {
+            if crate::ssrf::oob::oob_was_hit(id) {
+                self.confirm_callback(id, reporter);
+                confirmed += 1;
+            }
+        }
+        confirmed
+    }
+
     /// Called when an OOB callback is received
     pub fn confirm_callback(
         &self,
@@ -106,8 +123,13 @@ impl BlindXssEngine {
 }
 
 fn generate_unique_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Monotonic counter guarantees uniqueness even within the same second; the
+    // timestamp alone collided for IDs generated back-to-back.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let timestamp = current_timestamp();
-    format!("BXSS{}", timestamp)
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("BXSS{}{:x}", timestamp, seq)
 }
 
 fn current_timestamp() -> u64 {

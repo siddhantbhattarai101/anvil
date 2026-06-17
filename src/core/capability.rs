@@ -26,6 +26,45 @@ pub enum Capability {
     
     // SSRF scanner
     Ssrf,            // Server-Side Request Forgery
+
+    // Command injection
+    Cmdi,            // OS command injection (CWE-78)
+
+    // Path traversal / LFI
+    PathTraversal,   // Path traversal / Local File Inclusion (CWE-22)
+
+    // Server-Side Template Injection
+    Ssti,            // Server-Side Template Injection (CWE-1336)
+
+    // Open redirect
+    OpenRedirect,    // Open redirect / unvalidated forward (CWE-601)
+
+    // CORS misconfiguration
+    Cors,            // Cross-Origin Resource Sharing misconfiguration (CWE-942)
+
+    // CRLF / HTTP header injection
+    Crlf,            // CRLF / response header injection (CWE-113)
+
+    // Passive security-header audit
+    SecurityHeaders, // Missing/weak security headers & cookie flags (OWASP A05)
+
+    // JWT weaknesses
+    Jwt,             // JSON Web Token weaknesses (CWE-347)
+
+    // Sensitive data exposure
+    Secrets,         // Exposed secrets / sensitive data (OWASP A02)
+
+    // NoSQL injection
+    NoSqli,          // NoSQL (MongoDB operator) injection (CWE-943)
+
+    // XML External Entity
+    Xxe,             // XML External Entity injection (CWE-611)
+
+    // Vulnerable/outdated components
+    Components,      // Outdated front-end libraries with known CVEs (OWASP A06)
+
+    // Subresource Integrity
+    Sri,             // Missing Subresource Integrity on cross-origin assets (OWASP A08)
 }
 
 impl Capability {
